@@ -12,3 +12,4 @@ tsconfig.tsbuildinfo
 
 # Local form backend store — contains real respondent answers.
 tmp/
+.vercel
