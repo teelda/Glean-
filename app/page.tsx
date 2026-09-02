@@ -4,20 +4,35 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft, ArrowRight, BarChart3, ChevronUp, Bot, Check, ChevronDown, ChevronRight,
   CircleHelp, ClipboardList, Download, Eye, FileText, FolderOpen, Home, Lightbulb,
-  LockKeyhole, Menu, MessageSquareText, MoreHorizontal, Plus, Quote,
+  LockKeyhole, LogOut, Menu, MessageSquareText, MoreHorizontal, PanelLeftClose,
+  PanelLeftOpen, Plus, Quote,
   Save, Search, SendHorizontal, Settings, Share2, Sparkles, Sprout, Trash2, Upload, X
 } from "lucide-react";
 import { sampleStudy } from "@/lib/sample-data";
-import type { Evidence, Interview, Study, Theme, ThemeStatus } from "@/lib/types";
+import type { Evidence, Interview, Strength, Study, Theme, ThemeStatus } from "@/lib/types";
 import type { FormDraft, FormLogic, FormQuestion, FormSection } from "@/lib/form-import";
 import { Dialog } from "./components/Dialog";
 import { buildEvidenceCsv, buildWordReport, executiveSummary } from "@/lib/export";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+
+type SessionUser = { id: string; email: string | null };
+
+/** Where the workspace study lived before accounts existed. */
+const LEGACY_STUDY_KEY = "glean-study-v1";
+
+/** Two letters from the email's local part, so the avatar is not a blank disc. */
+function initialsFor(email: string | null) {
+  const local = (email ?? "").split("@")[0];
+  const parts = local.split(/[._-]+/).filter(Boolean);
+  const letters = parts.length > 1 ? parts[0][0] + parts[1][0] : local.slice(0, 2);
+  return (letters || "?").toUpperCase();
+}
 import {
   buildContextFormDraft, encodeFormDraftForUrl, isLegacyContextValue,
   removeContextEchoQuestions, segmentResearchDoc, slugify, splitDraftByPurpose, titleCase
 } from "@/lib/form-import";
 
-type Area = "home" | "studies" | "forms" | "study";
+type Area = "home" | "studies" | "forms" | "study" | "help" | "settings";
 type Stage = "interviews" | "findings" | "report";
 
 const initialStudy: Study = {
@@ -38,26 +53,47 @@ export default function GleanApp() {
   const [evidence, setEvidence] = useState<Evidence | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [showChat, setShowChat] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
+  // null = follow the area default (the builder wants the room, so Forms
+  // collapses the rail to icons); true/false = the person overrode it.
+  const [navOverride, setNavOverride] = useState<boolean | null>(null);
   const [toast, setToast] = useState("");
   const [showWelcome, setShowWelcome] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [droppedFiles, setDroppedFiles] = useState<FileList | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [user, setUser] = useState<SessionUser | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
 
+  // One key for the workspace study, derived from who is signed in. Before
+  // accounts existed everything lived under LEGACY_STUDY_KEY; scoping it per
+  // user stops two accounts on the same machine from seeing each other's study.
+  const storageKey = user ? `${LEGACY_STUDY_KEY}:${user.id}` : LEGACY_STUDY_KEY;
+
+  // The middleware already guarantees a session on this route; this only reads
+  // it so the shell can show who is signed in and offer sign-out.
   useEffect(() => {
-    const stored = window.localStorage.getItem("glean-study-v1");
-    if (stored) {
-      try { setStudy(JSON.parse(stored)); } catch { /* keep demo data */ }
-    }
+    const supabase = createSupabaseBrowserClient();
+    if (!supabase) return;
+    let active = true;
+    supabase.auth.getUser().then(({ data }) => {
+      if (!active) return;
+      setUser(data.user ? { id: data.user.id, email: data.user.email ?? null } : null);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ? { id: session.user.id, email: session.user.email ?? null } : null);
+    });
+    return () => { active = false; sub.subscription.unsubscribe(); };
+  }, []);
+
+  useEffect(() => {
     setShowWelcome(!window.localStorage.getItem("glean-onboarded"));
-    setLoaded(true);
     const applyHash = () => {
       const hash = window.location.hash.replace("#", "");
       if (hash === "forms") return setArea("forms");
+      if (hash === "help") return setArea("help");
+      if (hash === "settings") return setArea("settings");
       if (hash === "studies") return setArea("studies");
       if (hash === "report") {
         setArea("study");
@@ -78,13 +114,41 @@ export default function GleanApp() {
     return () => window.removeEventListener("hashchange", applyHash);
   }, []);
 
+  // Load the study for whoever is signed in. Runs again when the account
+  // changes, so signing out and back in as someone else swaps the workspace
+  // instead of leaving the previous person's study on screen.
+  useEffect(() => {
+    setLoaded(false);
+    let raw = window.localStorage.getItem(storageKey);
+
+    // First sign-in on a browser that already held pre-auth work: adopt it once,
+    // for one account only. `glean-study-claimed` records which, so a second
+    // account on the same machine starts clean rather than inheriting it.
+    if (!raw && user) {
+      const legacy = window.localStorage.getItem(LEGACY_STUDY_KEY);
+      const claimedBy = window.localStorage.getItem("glean-study-claimed");
+      if (legacy && (!claimedBy || claimedBy === user.id)) {
+        window.localStorage.setItem(storageKey, legacy);
+        window.localStorage.setItem("glean-study-claimed", user.id);
+        raw = legacy;
+      }
+    }
+
+    if (raw) {
+      try { setStudy(JSON.parse(raw)); } catch { setStudy(initialStudy); }
+    } else {
+      setStudy(initialStudy);
+    }
+    setLoaded(true);
+  }, [storageKey, user]);
+
   useEffect(() => {
     // Wait for the stored study to land first: writing on the mount pass would
     // persist the initial demo study over it, before the hydrating setState
     // commits. Once `loaded` flips, this re-runs with the real value.
     if (!loaded) return;
-    window.localStorage.setItem("glean-study-v1", JSON.stringify(study));
-  }, [study, loaded]);
+    window.localStorage.setItem(storageKey, JSON.stringify(study));
+  }, [study, loaded, storageKey]);
 
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
 
@@ -93,6 +157,15 @@ export default function GleanApp() {
   const readiness = study.themes.length ? Math.round((reviewed / study.themes.length) * 100) : 0;
   const safeIndex = Math.min(findingIndex, Math.max(study.themes.length - 1, 0));
   const selectedTheme = study.themes[safeIndex] ?? null;
+
+  // Sign-out clears the Supabase session cookie; the middleware then redirects
+  // any further navigation to /signin. The study stays in localStorage under
+  // this user's key, so signing back in restores it.
+  const signOut = useCallback(async () => {
+    const supabase = createSupabaseBrowserClient();
+    if (supabase) await supabase.auth.signOut();
+    window.location.href = "/signin";
+  }, []);
 
   const notify = (message: string) => {
     setToast(message);
@@ -103,6 +176,7 @@ export default function GleanApp() {
   const openArea = (nextArea: Area) => {
     setArea(nextArea);
     setMobileNav(false);
+    setNavOverride(null);
     if (window.location.hash !== `#${nextArea}`) window.history.pushState(null, "", `#${nextArea}`);
   };
 
@@ -110,6 +184,7 @@ export default function GleanApp() {
     setArea("study");
     setStage(nextStage);
     setMobileNav(false);
+    setNavOverride(null);
     if (window.location.hash !== `#${nextStage}`) window.history.pushState(null, "", `#${nextStage}`);
   };
 
@@ -210,9 +285,11 @@ export default function GleanApp() {
     notify("Word report downloaded");
   };
 
-  return <div className="glean-app">
+  const navCollapsed = navOverride ?? area === "forms";
+
+  return <div className={`glean-app ${navCollapsed ? "nav-collapsed" : ""}`}>
     {mobileNav && <button className="nav-scrim" aria-label="Close navigation" onClick={() => setMobileNav(false)}/>} 
-    <Sidebar study={study} area={area} stage={stage} reviewed={reviewed} onArea={openArea} onStage={openStudy} onSettings={() => { setShowSettings(true); setMobileNav(false); }} mobileOpen={mobileNav}/>
+    <Sidebar study={study} area={area} stage={stage} reviewed={reviewed} onArea={openArea} onStage={openStudy} mobileOpen={mobileNav} user={user} onSignOut={signOut} collapsed={navCollapsed} onToggleCollapse={() => setNavOverride(!navCollapsed)}/>
 
     <main className="glean-main">
       <Topbar
@@ -221,7 +298,9 @@ export default function GleanApp() {
         readiness={readiness}
         stage={stage}
         onMenu={() => setMobileNav(true)}
-        onReport={() => openStudy("report")}
+        onArea={openArea}
+        onStage={openStudy}
+        onChat={() => setShowChat(true)}
       />
 
       {area === "home" && <HomeView study={study} approved={approved} readiness={readiness} onContinue={() => openStudy(study.interviews.length ? "findings" : "interviews")} onNew={() => startNewStudy("studies")} onForms={() => openArea("forms")} onInterviews={() => openStudy("interviews")} onChat={() => setShowChat(true)}/>} 
@@ -232,6 +311,7 @@ export default function GleanApp() {
         study={study}
         theme={selectedTheme}
         index={safeIndex}
+        onSelect={setFindingIndex}
         onPrevious={() => setFindingIndex(index => Math.max(0, index - 1))}
         onNext={() => setFindingIndex(index => Math.min(study.themes.length - 1, index + 1))}
         onEvidence={setEvidence}
@@ -239,13 +319,14 @@ export default function GleanApp() {
         onAdd={() => setStage("interviews")}
         onAnalyse={analyse}
       />} 
+      {area === "help" && <HelpView onForms={() => openArea("forms")} onInterviews={() => openStudy("interviews")} onSettings={() => openArea("settings")}/>}
+      {area === "settings" && <SettingsView user={user} study={study} onSignOut={signOut} onNotify={notify} onReset={() => startNewStudy("studies")} onExportCsv={exportEvidence} onExportWord={exportWord}/>}
       {area === "study" && stage === "report" && <ReportStage study={study} onReview={() => setStage("findings")} onExport={() => setShowExport(value => !value)} exportOpen={showExport} onPdf={() => { window.print(); setShowExport(false); }} onWord={exportWord} onCsv={exportEvidence}/>} 
     </main>
 
     {evidence && <EvidenceDrawer evidence={evidence} study={study} onClose={() => setEvidence(null)}/>} 
     {(showAdd || droppedFiles) && <AddInterviewModal study={study} initialFiles={droppedFiles} onClose={() => { setShowAdd(false); setDroppedFiles(null); }} onAddMany={addInterviews}/>} 
     {showChat && <ChatModal study={study} onClose={() => setShowChat(false)} onReview={() => { setShowChat(false); openStudy("findings"); }}/>} 
-    {showSettings && <SettingsModal onClose={() => setShowSettings(false)} onSave={() => { setShowSettings(false); notify("Settings saved"); }}/>} 
     {confirmReset && <ConfirmDialog
       title="Start a new study?"
       body={`This replaces the current study. ${study.interviews.length} ${study.interviews.length === 1 ? "interview" : "interviews"} and ${study.themes.length} ${study.themes.length === 1 ? "finding" : "findings"} will be permanently removed from this workspace, including any approvals. Export your evidence first if you need to keep it.`}
@@ -258,19 +339,31 @@ export default function GleanApp() {
   </div>;
 }
 
-function Sidebar({ study, area, stage, reviewed, onArea, onStage, onSettings, mobileOpen }: { study: Study; area: Area; stage: Stage; reviewed: number; onArea: (area: Area) => void; onStage: (stage: Stage) => void; onSettings: () => void; mobileOpen: boolean }) {
+function Sidebar({ study, area, stage, reviewed, onArea, onStage, mobileOpen, user, onSignOut, collapsed, onToggleCollapse }: { study: Study; area: Area; stage: Stage; reviewed: number; onArea: (area: Area) => void; onStage: (stage: Stage) => void; mobileOpen: boolean; user: SessionUser | null; onSignOut: () => void; collapsed: boolean; onToggleCollapse: () => void }) {
   const steps: { id: Stage; label: string; meta: string }[] = [
     { id: "interviews", label: "Add interviews", meta: `${study.interviews.length} interviews` },
     { id: "findings", label: "Review findings", meta: `${study.themes.length} findings` },
     { id: "report", label: "Present report", meta: study.themes.some(theme => theme.status === "approved") ? "Ready to draft" : "Not started" }
   ];
+  // Labels double as tooltips once the rail is icons-only, so the collapsed
+  // state stays usable without hovering blind.
   return <aside className={`glean-sidebar ${mobileOpen ? "open" : ""}`}>
-    <a className="glean-brand" href="#home" onClick={() => onArea("home")} aria-label="Glean home"><span><Sprout size={26}/></span><span><b>Glean</b><small>Powered by Folde</small></span></a>
+    <div className="sidebar-head">
+      <a className="glean-brand" href="#home" onClick={() => onArea("home")} aria-label="Glean home"><span><Sprout size={26}/></span><span><b>Glean</b><small>Powered by Folde</small></span></a>
+      <button
+        type="button"
+        className="nav-collapse-toggle"
+        onClick={onToggleCollapse}
+        aria-expanded={!collapsed}
+        aria-label={collapsed ? "Expand navigation" : "Collapse navigation"}
+        title={collapsed ? "Expand navigation" : "Collapse navigation"}
+      >{collapsed ? <PanelLeftOpen size={18}/> : <PanelLeftClose size={18}/>}</button>
+    </div>
     <nav className="global-nav" aria-label="Primary navigation">
-      <a className={area === "home" ? "active" : ""} href="#home" onClick={() => onArea("home")}><Home size={20}/>Home</a>
-      <a className={area === "studies" || (area === "study" && stage !== "report") ? "active" : ""} href="#studies" onClick={() => onArea("studies")}><FolderOpen size={20}/>Studies</a>
-      <a className={area === "forms" ? "active" : ""} href="#forms" onClick={() => onArea("forms")}><ClipboardList size={20}/>Forms</a>
-      <a className={area === "study" && stage === "report" ? "active" : ""} href="#report" onClick={() => onStage("report")}><FileText size={20}/>Reports</a>
+      <a className={area === "home" ? "active" : ""} href="#home" onClick={() => onArea("home")} title="Home"><Home size={20}/><span>Home</span></a>
+      <a className={area === "studies" || (area === "study" && stage !== "report") ? "active" : ""} href="#studies" onClick={() => onArea("studies")} title="Studies"><FolderOpen size={20}/><span>Studies</span></a>
+      <a className={area === "forms" ? "active" : ""} href="#forms" onClick={() => onArea("forms")} title="Forms"><ClipboardList size={20}/><span>Forms</span></a>
+      <a className={area === "study" && stage === "report" ? "active" : ""} href="#report" onClick={() => onStage("report")} title="Reports"><FileText size={20}/><span>Reports</span></a>
     </nav>
     <section className="current-study-nav">
       <span className="nav-label">CURRENT STUDY</span>
@@ -287,94 +380,151 @@ function Sidebar({ study, area, stage, reviewed, onArea, onStage, onSettings, mo
       <div className="study-progress"><span><b>Study progress</b><small>{reviewed} of {study.themes.length} findings reviewed</small></span><i><b style={{ width: `${study.themes.length ? (reviewed / study.themes.length) * 100 : 0}%` }}/></i></div>
     </section>
     <div className="sidebar-footer">
-      <button onClick={() => alert("Glean guides are coming soon.")}><CircleHelp size={20}/>Help</button>
-      <button onClick={onSettings}><Settings size={20}/>Settings</button>
-      <button className="profile"><span>MA</span><span><b>Matilda Anashie</b><small>Researcher</small></span><ChevronDown size={15}/></button>
+      <button className={area === "help" ? "active" : ""} onClick={() => onArea("help")} title="Help"><CircleHelp size={20}/><span>Help</span></button>
+      <button className={area === "settings" ? "active" : ""} onClick={() => onArea("settings")} title="Settings"><Settings size={20}/><span>Settings</span></button>
+      {user
+        ? <button className="profile" onClick={onSignOut} title={`Sign out of ${user.email ?? "Glean"}`}>
+            <span>{initialsFor(user.email)}</span>
+            <span><b>{user.email ?? "Signed in"}</b><small>Sign out</small></span>
+            <LogOut size={15}/>
+          </button>
+        : <button className="profile" onClick={onSignOut}><span>—</span><span><b>Not signed in</b><small>Sign in</small></span><ChevronDown size={15}/></button>}
     </div>
   </aside>;
 }
 
-function Topbar({ area, study, readiness, stage, onMenu, onReport }: { area: Area; study: Study; readiness: number; stage: Stage; onMenu: () => void; onReport: () => void }) {
+const STAGE_LABEL: Record<Stage, string> = { interviews: "Interviews", findings: "Findings", report: "Report" };
+
+/**
+ * The bar carried a single flat title and, on a study, a chevron that opened
+ * nothing — an affordance the app could not honour. It is a breadcrumb now:
+ * inside a study you are three levels deep, and the trail is the only thing
+ * that says so and lets you climb back out.
+ */
+function Topbar({ area, study, readiness, stage, onMenu, onArea, onStage, onChat }: { area: Area; study: Study; readiness: number; stage: Stage; onMenu: () => void; onArea: (area: Area) => void; onStage: (stage: Stage) => void; onChat: () => void }) {
+  const trail = area === "home" ? [{ label: "Home" }]
+    : area === "studies" ? [{ label: "Studies" }]
+    : area === "forms" ? [{ label: "Forms" }]
+    : area === "help" ? [{ label: "Help" }]
+    : area === "settings" ? [{ label: "Settings" }]
+    : [{ label: "Studies", go: () => onArea("studies") }, { label: study.title, go: () => onStage(stage) }, { label: STAGE_LABEL[stage] }];
+
   return <header className="glean-topbar">
-    <div className="topbar-title"><button className="mobile-menu" aria-label="Open navigation" onClick={onMenu}><Menu size={20}/></button><b>{area === "home" ? "Home" : area === "studies" ? "Studies" : area === "forms" ? "Forms" : study.title}</b>{area === "study" && <ChevronDown size={15}/>}</div>
-    {area === "study" && <div className="topbar-actions"><div className="report-readiness"><span>Report readiness</span><i/><b>{readiness >= 75 ? "Good" : readiness ? "In progress" : "Not started"}</b><div><span style={{ width: `${readiness}%` }}/></div><em>{readiness}%</em></div>{stage !== "report" && <button className="outline-button" onClick={onReport}><FileText size={17}/>Open report</button>}</div>}
+    <div className="topbar-title">
+      <button className="mobile-menu" aria-label="Open navigation" onClick={onMenu}><Menu size={20}/></button>
+      <nav className="topbar-crumbs" aria-label="Breadcrumb">
+        {trail.map((crumb, index) => <span key={crumb.label}>
+          {index > 0 && <ChevronRight size={14} aria-hidden="true"/>}
+          {crumb.go ? <button onClick={crumb.go}>{crumb.label}</button> : <b aria-current="page">{crumb.label}</b>}
+        </span>)}
+      </nav>
+    </div>
+    <div className="topbar-actions">
+      {area === "study" && <>
+        <div className="report-readiness"><span>Report readiness</span><i/><b>{readiness >= 75 ? "Good" : readiness ? "In progress" : "Not started"}</b><div><span style={{ width: `${readiness}%` }}/></div><em>{readiness}%</em></div>
+        {stage !== "report" && <button className="outline-button" onClick={() => onStage("report")}><FileText size={17}/>Open report</button>}
+      </>}
+      <button className="topbar-chat" onClick={onChat} title="Ask Glean"><Bot size={17}/><span>Ask Glean</span></button>
+    </div>
   </header>;
 }
 
+const RESEARCH_PATHS = [
+  { id: "form", tone: "lilac", icon: ClipboardList, title: "Create a form", body: "Draft a screener, consent and questions from your research goal — or from a plan you already wrote." },
+  { id: "interviews", tone: "teal", icon: MessageSquareText, title: "Analyse interviews", body: "Upload transcripts and review themes that stay tied to the exact words participants used." },
+  { id: "doc", tone: "coral", icon: FileText, title: "Import a research doc", body: "Pull questions out of a DOCX, PDF or TXT and turn them into an editable form draft." }
+] as const;
+
 function HomeView({ study, approved, readiness, onContinue, onNew, onForms, onInterviews, onChat }: { study: Study; approved: number; readiness: number; onContinue: () => void; onNew: () => void; onForms: () => void; onInterviews: () => void; onChat: () => void }) {
-  const reviewed = study.themes.filter(theme => theme.status !== "draft").length;
   const draftFindings = study.themes.length - approved;
-  const topFinding = study.themes[0];
+  const topFinding = study.themes.find(theme => theme.status === "approved") ?? study.themes[0];
+  const openPath = (id: string) => id === "interviews" ? onInterviews() : onForms();
+
   return <section className="home-view page-pad">
-    <div className="home-shell">
-      <section className="home-copy">
-        <span className="eyebrow">RESEARCH WORKSPACE</span>
-        <h1>Turn research into decisions.</h1>
-        <p>Glean helps you move from interviews, forms, and research documents to reviewed findings, exact quotes, and a report people can trust.</p>
-        <div className="hero-actions">
-          <button className="primary-button" onClick={onNew}>Start research<ArrowRight size={17}/></button>
-          <button className="outline-button" onClick={onContinue}>Continue active work</button>
-          <button className="text-button" onClick={onChat}><Bot size={17}/>Ask Glean</button>
+    <div className="home-opener">
+      <div className="home-intro">
+        <span className="eyebrow">Research workspace</span>
+        <h1>Turn research into <em className="hero-mark">decisions</em>.</h1>
+        <p className="home-lede">Move from interviews, forms and research documents to reviewed findings, exact quotes, and a report people can trust.</p>
+        <div className="home-actions">
+          <button className="primary-button" onClick={onNew}>Start a new study<ArrowRight size={17}/></button>
+          <button className="outline-button" onClick={onContinue}>Continue where you left off</button>
         </div>
-        <div className="research-type-grid" aria-label="Choose research type">
-          <button onClick={onForms}><ClipboardList size={19}/><span><b>Create a form</b><small>Draft survey/research forms from goals, notes, DOCX, PDF, or TXT.</small></span></button>
-          <button onClick={onInterviews}><MessageSquareText size={19}/><span><b>Analyse interviews</b><small>Upload transcripts and review themes tied to exact quotes.</small></span></button>
-          <button onClick={onForms}><FileText size={19}/><span><b>Import a research doc</b><small>Extract mixed questions and split them into reviewable form drafts.</small></span></button>
-        </div>
-        <div className="home-detail-grid">
-          <HomeDetail title="Evidence rule" value="Quote first" text="Every finding is shown with the exact participant quotes behind it, so you can verify a claim before you approve it."/>
-          <HomeDetail title="Your data" value="Stays in this workspace" text="Raw transcripts are never included in an exported report or a shared link."/>
-          <HomeDetail title="Sample size" value="5–20 interviews" text="Enough for patterns to repeat without taking longer to review than the research is worth."/>
-        </div>
-      </section>
-      <section className="home-study-panel" aria-label="Active study">
-        <span className="eyebrow">ACTIVE STUDY</span>
+        <button className="hero-chat" onClick={onChat}>
+          <span className="hero-chat-mark"><Bot size={17}/></span>
+          <span><b>Ask Glean</b><small>Answers cited to the interviews</small></span>
+          <ArrowRight size={16}/>
+        </button>
+      </div>
+
+      <aside className="active-study-card" aria-label="Active study">
+        <span className="eyebrow">Active study</span>
         <h2>{study.title}</h2>
         <p>{study.goal}</p>
-        <div className="home-metrics">
-          <Metric value={study.interviews.length} label="Interviews"/>
-          <Metric value={approved} label="Approved"/>
-          <Metric value={draftFindings} label="To review"/>
+        <dl className="study-metrics">
+          <div><dt>Interviews</dt><dd>{study.interviews.length}</dd></div>
+          <div><dt>Approved</dt><dd>{approved}</dd></div>
+          <div><dt>To review</dt><dd>{draftFindings}</dd></div>
+        </dl>
+        <div className="study-readiness">
+          <div><span>Review readiness</span><b>{readiness}%</b></div>
+          <i><b style={{ width: `${readiness}%` }}/></i>
         </div>
-        <button className="text-button study-link" onClick={onContinue}>Open study<ChevronRight size={16}/></button>
-      </section>
+        <button className="primary-button" onClick={onContinue}>Open study<ArrowRight size={16}/></button>
+      </aside>
     </div>
-    <div className="home-workbench">
-      <section className="home-summary">
-        <div><span className="eyebrow">LATEST SYNTHESIS</span><h2>{topFinding?.title ?? "No findings yet"}</h2></div>
-        <p>{topFinding?.summary ?? "Choose a research path first: create a form, import an existing research doc, or add interview transcripts."}</p>
-        <div className="summary-strip">
-          <span><b>{readiness}%</b><small>Review readiness</small></span>
-          <span><b>{study.status === "analysed" ? "Analysed" : study.status === "stale" ? "Needs re-analysis" : "Not analysed"}</b><small>Study status</small></span>
-          <span><b>{study.updatedAt}</b><small>Last updated</small></span>
-        </div>
+
+    <section className="home-paths" aria-label="Start research">
+      <h2 className="section-title">Where do you want to start?</h2>
+      <div className="path-grid">
+        {RESEARCH_PATHS.map(path => {
+          const Icon = path.icon;
+          return <button key={path.id} className={`path-card tone-${path.tone}`} onClick={() => openPath(path.id)}>
+            <span className="path-icon"><Icon size={22}/></span>
+            <b>{path.title}</b>
+            <p>{path.body}</p>
+            <span className="path-go">Start<ArrowRight size={16}/></span>
+          </button>;
+        })}
+      </div>
+    </section>
+
+    <div className="home-lower">
+      <section className="synthesis-card">
+        <span className="eyebrow">Latest synthesis</span>
+        {topFinding ? <>
+          <h2>{topFinding.title}</h2>
+          <p>{topFinding.summary}</p>
+          {topFinding.evidence[0] && <figure className="synthesis-quote">
+            <blockquote>{topFinding.evidence[0].quote}</blockquote>
+            <figcaption>{topFinding.evidence[0].participantCode} · {topFinding.evidence[0].participantRole}</figcaption>
+          </figure>}
+          <button className="text-button" onClick={onContinue}>Review findings<ArrowRight size={16}/></button>
+        </> : <>
+          <h2>No findings yet</h2>
+          <p>Add interview transcripts, then run analysis to surface the patterns worth reviewing.</p>
+          <button className="text-button" onClick={onInterviews}>Add interviews<ArrowRight size={16}/></button>
+        </>}
       </section>
-      <section className="home-chat-card">
-        <div><span><Bot size={18}/></span><span><b>Study chat</b><small>Answers must come from interviews and approved findings.</small></span></div>
+
+      <section className="chat-card">
+        <span className="chat-mark"><Bot size={20}/></span>
+        <h2>Study chat</h2>
+        <p>Ask a question and get an answer drawn only from your interviews and approved findings.</p>
         <button className="chat-question" onClick={onChat}>What should we change in onboarding?</button>
         <button className="chat-question" onClick={onChat}>Which problems have the strongest support?</button>
-        <button className="primary-button" onClick={onChat}>Open chat<SendHorizontal size={16}/></button>
+        <button className="outline-button" onClick={onChat}>Open chat<SendHorizontal size={16}/></button>
       </section>
     </div>
-    <div className="home-journey">
-      <JourneyLine number="1" title="Choose research type" text="Forms, interviews, docs, or response analysis" complete/>
-      <JourneyLine number="2" title="Collect or import data" text={`${study.interviews.length} interview sources in the active study`} complete={study.interviews.length > 0}/>
-      <JourneyLine number="3" title="Review and share" text="Approve findings, export, or publish links" complete={approved > 0}/>
-    </div>
+
+    <ul className="home-principles">
+      <li><b>Quote first</b><span>Every finding shows the participant quotes behind it, so you can check a claim before approving it.</span></li>
+      <li><b>Stays in this workspace</b><span>Raw transcripts are never included in an exported report.</span></li>
+      <li><b>5–20 interviews</b><span>Enough for patterns to repeat without taking longer to review than the research is worth.</span></li>
+    </ul>
   </section>;
 }
 
-function HomeDetail({ title, value, text }: { title: string; value: string; text: string }) {
-  return <article><span>{title}</span><b>{value}</b><p>{text}</p></article>;
-}
-
-function Metric({ value, label }: { value: number; label: string }) {
-  return <span><b>{value}</b><small>{label}</small></span>;
-}
-
-function JourneyLine({ number, title, text, complete }: { number: string; title: string; text: string; complete: boolean }) {
-  return <div className="journey-line"><span>{complete ? <Check size={17}/> : number}</span><div><b>{title}</b><small>{text}</small></div></div>;
-}
 
 function StudiesView({ study, onOpen, onNew, onForms }: { study: Study; onOpen: () => void; onNew: () => void; onForms: () => void }) {
   const [query, setQuery] = useState("");
@@ -403,9 +553,33 @@ function StudiesView({ study, onOpen, onNew, onForms }: { study: Study; onOpen: 
   </section>;
 }
 
+/**
+ * Where the form sits in its lifecycle.
+ *
+ * This replaces four independent pieces of state — generated, published,
+ * backendFormId and backendShareUrl — that nothing kept in agreement. They
+ * drifted apart in practice: a form restored from localStorage came back
+ * `published` with no id or link, so the builder showed a "Published" chip
+ * directly above "Draft not generated" and offered a share link that pointed at
+ * nothing. Switching drafts was worse, because the previous form's link stayed
+ * behind under the new form's name.
+ *
+ * A published form now carries its own link, so "published without a link" is
+ * not a value anyone can construct.
+ */
+type FormLifecycle =
+  | { kind: "blank" }
+  | { kind: "draft" }
+  | { kind: "published"; formId: string; shareUrl: string };
+
+/** Review is a sequence, not two booleans: approved-but-never-requested was representable. */
+type ReviewState =
+  | { kind: "none" }
+  | { kind: "requested"; sentTo: string; note: string }
+  | { kind: "approved"; sentTo: string; note: string };
+
 function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy: () => void; onCopied: () => void }) {
-  const [generated, setGenerated] = useState(false);
-  const [published, setPublished] = useState(false);
+  const [lifecycle, setLifecycle] = useState<FormLifecycle>({ kind: "blank" });
   const [showEditor, setShowEditor] = useState(true);
   const [responses, setResponses] = useState<{ id: string; answers: Record<string, string>; createdAt: string }[]>([]);
   const [moved, setMoved] = useState(false);
@@ -417,13 +591,9 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
   const [importMessage, setImportMessage] = useState("");
   const [setupStep, setSetupStep] = useState<"source" | "context" | "review">("source");
   const [reviewerEmail, setReviewerEmail] = useState("");
-  const [reviewRequested, setReviewRequested] = useState(false);
-  const [reviewApproved, setReviewApproved] = useState(false);
+  const [review, setReview] = useState<ReviewState>({ kind: "none" });
   const [reviewComment, setReviewComment] = useState("Tighten sensitive questions before publishing.");
   const [publishing, setPublishing] = useState(false);
-  const [backendMode, setBackendMode] = useState("");
-  const [backendFormId, setBackendFormId] = useState("");
-  const [backendShareUrl, setBackendShareUrl] = useState("");
   const [formName, setFormName] = useState("");
   const [researchGoal, setResearchGoal] = useState("");
   const [audience, setAudience] = useState("");
@@ -445,7 +615,7 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
     const stored = window.localStorage.getItem("glean-form-draft-v1");
     if (!stored) return;
     try {
-      const draft = JSON.parse(stored) as { formName?: string; researchGoal?: string; audience?: string; decision?: string; sections?: FormSection[]; drafts?: FormDraft[]; activeDraftId?: string; generated?: boolean; published?: boolean };
+      const draft = JSON.parse(stored) as { formName?: string; researchGoal?: string; audience?: string; decision?: string; sections?: FormSection[]; drafts?: FormDraft[]; activeDraftId?: string; lifecycle?: FormLifecycle; generated?: boolean; published?: boolean };
       const restoredFormName = draft.formName && !isLegacyContextValue("formName", draft.formName) ? draft.formName : "";
       if (restoredFormName) setFormName(restoredFormName);
       if (draft.researchGoal && !isLegacyContextValue("researchGoal", draft.researchGoal)) setResearchGoal(draft.researchGoal);
@@ -454,15 +624,23 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
       if (draft.sections?.length) setSections(removeContextEchoQuestions(draft.sections, restoredFormName || draft.formName || ""));
       if (draft.drafts?.length) setDrafts(draft.drafts.map(item => ({ ...item, sections: removeContextEchoQuestions(item.sections, item.name) })));
       if (draft.activeDraftId) setActiveDraftId(draft.activeDraftId);
-      if (draft.generated) setGenerated(true);
-      if (draft.published) setPublished(true);
+      // Restores to draft even if the stored payload says published: the public
+      // token is never written to localStorage, so a "published" form restored
+      // here would have no link to share. `generated`/`published` are the
+      // pre-union keys, still read so older saved drafts keep their questions.
+      if (draft.lifecycle?.kind === "draft" || draft.generated || draft.published) setLifecycle({ kind: "draft" });
     } catch { /* keep default form */ }
   }, []);
+  const generated = lifecycle.kind !== "blank";
+  const published = lifecycle.kind === "published";
+  const backendFormId = lifecycle.kind === "published" ? lifecycle.formId : "";
   const questionCount = sections.reduce((total, section) => total + section.questions.length, 0);
   const formSlug = slugify(formName || "research-form");
   const formPath = `/forms/${formSlug}`;
   const encodedDraft = encodeFormDraftForUrl({ name: formName, sections });
-  const shareUrl = backendShareUrl || `${origin || "http://localhost:3210"}${formPath}${encodedDraft ? `?draft=${encodedDraft}` : ""}`;
+  const shareUrl = lifecycle.kind === "published"
+    ? lifecycle.shareUrl
+    : `${origin || "http://localhost:3210"}${formPath}${encodedDraft ? `?draft=${encodedDraft}` : ""}`;
   const activeDraft = drafts.find(draft => draft.id === activeDraftId);
   const importedActiveDraft = Boolean(activeDraft && activeDraft.source !== "Generated from context");
   const hasContextForDraft = Boolean(formName.trim() && researchGoal.trim() && audience.trim() && decision.trim());
@@ -473,8 +651,10 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
     setResearchGoal(draft.goal ?? `Review questions imported from ${draft.source}.`);
     setAudience(draft.audience);
     setDecision(draft.purpose);
-    setPublished(draft.status === "Published");
-    setGenerated(true);
+    // A stored draft records that it was published once, but not the token that
+    // makes the link work, so selecting it opens a draft rather than showing a
+    // share card carrying the previously selected form's link.
+    setLifecycle({ kind: "draft" });
     setShowEditor(true);
   };
   const syncDraft = (patch: Partial<FormDraft>) => {
@@ -566,9 +746,8 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
     const draft: FormDraft = { id: activeDraftId || `draft-saved-${Date.now()}`, name: formName.trim() || "Untitled research form", goal: researchGoal, purpose: decision, audience, status: "Draft", sections, source: activeDraft?.source ?? "Saved draft" };
     setDrafts(current => activeDraftId && current.some(item => item.id === activeDraftId) ? current.map(item => item.id === activeDraftId ? { ...item, ...draft, id: activeDraftId } : item) : [draft, ...current]);
     setActiveDraftId(draft.id);
-    setGenerated(true);
-    setPublished(false);
-    window.localStorage.setItem("glean-form-draft-v1", JSON.stringify({ formName, researchGoal, audience, decision, sections, drafts: activeDraftId ? drafts.map(item => item.id === activeDraftId ? { ...item, ...draft, id: activeDraftId } : item) : [draft, ...drafts], activeDraftId: draft.id, generated: true, published: false }));
+    setLifecycle({ kind: "draft" });
+    window.localStorage.setItem("glean-form-draft-v1", JSON.stringify({ formName, researchGoal, audience, decision, sections, drafts: activeDraftId ? drafts.map(item => item.id === activeDraftId ? { ...item, ...draft, id: activeDraftId } : item) : [draft, ...drafts], activeDraftId: draft.id, lifecycle: { kind: "draft" } }));
     setImportMessage("Draft saved. You can leave this page and come back to keep editing.");
   };
   const publishToBackend = async () => {
@@ -589,11 +768,11 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
       if (!response.ok) throw new Error(result.error ?? "Could not publish form");
       const token = result.form?.token;
       if (!token) throw new Error("Backend did not return a public token");
-      setBackendMode(result.mode ?? "");
-      setBackendFormId(result.form.id);
-      setBackendShareUrl(`${origin || "http://localhost:3210"}/forms/${result.form.slug}?token=${token}`);
-      setGenerated(true);
-      setPublished(true);
+      setLifecycle({
+        kind: "published",
+        formId: result.form.id,
+        shareUrl: `${origin || "http://localhost:3210"}/forms/${result.form.slug}?token=${token}`
+      });
       setShowPreview(true);
       syncDraft({ status: "Published" });
       setImportMessage(result.mode === "supabase" ? "Published. Responses will be collected for this form." : "Published for local testing. Responses will be collected on this device while the dev server is running.");
@@ -614,7 +793,8 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
       if (!response.ok) throw new Error(result.error ?? "Could not load responses");
       const rows = result.responses ?? [];
       setResponses(rows);
-      setBackendMode(result.mode ?? backendMode);
+      // The queued-for-analysis notice describes the list being replaced here.
+      setMoved(false);
       setImportMessage(rows.length
         ? `${rows.length} ${rows.length === 1 ? "response" : "responses"} loaded.`
         : "No responses yet. Share the link, or submit a test response yourself.");
@@ -639,8 +819,7 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
       return current.map(item => item.id === activeDraftId ? { ...item, ...draft, id: item.id } : item);
     });
     setActiveDraftId(current => current || draft.id);
-    setGenerated(true);
-    setPublished(false);
+    setLifecycle({ kind: "draft" });
     setShowEditor(true);
     setSetupStep("review");
     setImportMessage(`Drafted ${draft.sections.reduce((total, section) => total + section.questions.length, 0)} editable questions from your research context.`);
@@ -665,8 +844,7 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not send invite");
-      setReviewRequested(true);
-      setReviewApproved(false);
+      setReview({ kind: "requested", sentTo: reviewerEmail.trim(), note: reviewComment });
       setImportMessage(`Invite sent to ${reviewerEmail.trim()}.`);
     } catch (error) {
       setImportMessage(error instanceof Error ? error.message : "Could not send invite.");
@@ -685,6 +863,7 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
           <button className={setupStep === "context" ? "active" : ""} onClick={() => setSetupStep("context")}><span>2</span>Context</button>
           <button className={setupStep === "review" ? "active" : ""} onClick={() => setSetupStep("review")}><span>3</span>Review</button>
         </div>
+        <div className="setup-steps">
         <div className={`setup-step ${setupStep === "source" ? "active" : ""}`}>
           <div className="setup-content">
             <div className="setup-label"><b>Start with a source</b><small>Import a document, or start from context if you do not have one yet.</small></div>
@@ -724,22 +903,23 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
             <div className="review-flow-card">
               <div className="review-progress">
                 <span className="done">Draft</span>
-                <span className={reviewRequested ? "done" : ""}>Requested</span>
-                <span className={reviewApproved ? "done" : ""}>Approved</span>
+                <span className={review.kind !== "none" ? "done" : ""}>Requested</span>
+                <span className={review.kind === "approved" ? "done" : ""}>Approved</span>
               </div>
               <label>Reviewer email<input value={reviewerEmail} onChange={event => setReviewerEmail(event.target.value)} placeholder="teammate@company.com"/></label>
               <label>Reviewer note<textarea rows={3} value={reviewComment} onChange={event => setReviewComment(event.target.value)} placeholder="What should they check?"/></label>
               <div className="review-actions">
-                <button className="outline-button" onClick={requestReview}><SendHorizontal size={15}/>{reviewRequested ? "Resend invite" : "Send invite"}</button>
-                <button className="primary-button" onClick={() => { setReviewRequested(true); setReviewApproved(true); setImportMessage("Review marked approved for this prototype."); }} disabled={!questionCount}><Check size={15}/>Mark approved</button>
+                <button className="outline-button" onClick={requestReview}><SendHorizontal size={15}/>{review.kind === "none" ? "Send invite" : "Resend invite"}</button>
+                <button className="primary-button" onClick={() => { setReview({ kind: "approved", sentTo: reviewerEmail.trim(), note: reviewComment }); setImportMessage("Review marked approved for this prototype."); }} disabled={!questionCount}><Check size={15}/>Mark approved</button>
               </div>
-              {reviewRequested && <div className="review-notes refined"><p><b>{reviewerEmail || "Reviewer"}</b> {reviewComment || "Review requested."}</p>{reviewApproved && <p><b>Status</b> Approved for test publishing.</p>}</div>}
+              {review.kind !== "none" && <div className="review-notes refined"><p><b>{review.sentTo || "Reviewer"}</b> {review.note || "Review requested."}</p>{review.kind === "approved" && <p><b>Status</b> Approved for test publishing.</p>}</div>}
             </div>
           </div>
         </div>
+        </div>
       </section>
       <section className="form-preview-panel">
-        <div className="section-bar"><div><span className="eyebrow">{published ? "PUBLIC FORM" : "FORM BUILDER"}</span><h2>{generated ? formName : "Review and shape the form"}</h2></div><span className={`status-chip ${published ? "published" : ""}`}>{published ? "Published" : "Draft"}</span><span className="question-count">{questionCount} {questionCount === 1 ? "question" : "questions"}</span></div>
+        <div className="section-bar"><div><span className="eyebrow">{published ? "PUBLIC FORM" : "FORM BUILDER"}</span><h2>{generated ? formName : "Review and shape the form"}</h2></div><div className="section-bar-meta"><span className={`status-chip ${published ? "published" : ""}`}>{published ? "Published" : "Draft"}</span><span className="question-count">{questionCount} {questionCount === 1 ? "question" : "questions"}</span></div></div>
         <div className="builder-toolbar refined-toolbar">
           <div className="toolbar-status">
             <span>{importedActiveDraft ? <Check size={15}/> : <Sparkles size={15}/>}</span>
@@ -940,7 +1120,10 @@ function InterviewsStage({ study, onAdd, onAnalyse, onDropFiles, onRemove }: { s
     {study.interviews.length ? <div className="interview-list">{study.interviews.map(interview =>
       <div className="interview-row" key={interview.id}>
         <span className="participant-code">{interview.participant.code}</span>
-        <span><b>{interview.participant.role}</b><small>{interview.participant.segment}</small></span>
+        {/* The summary was written on every interview and shown on none of them,
+            so the list gave you no way to tell two participants apart without
+            opening a transcript. */}
+        <span><b>{interview.participant.role}</b><small>{interview.participant.segment}</small>{interview.summary && <em className="interview-summary">{interview.summary}</em>}</span>
         <span className={`quality ${interview.status}`}>
           {interview.status === "ready" ? <><Check size={15}/>Transcript ready</> : <><CircleHelp size={15}/>Needs review</>}
         </span>
@@ -976,7 +1159,10 @@ const STRENGTH_LABEL: Record<Theme["strength"], string> = {
   dominant: "Dominant — the majority raised this"
 };
 
-function FindingsStage({ study, theme, index, onPrevious, onNext, onEvidence, onStatus, onAdd, onAnalyse }: { study: Study; theme: Theme | null; index: number; onPrevious: () => void; onNext: () => void; onEvidence: (evidence: Evidence) => void; onStatus: (id: string, status: ThemeStatus) => void; onAdd: () => void; onAnalyse: () => void }) {
+/** Interviews a finding actually quotes — not the stored `participantCount`, which nothing verifies. */
+const quotedIn = (item: Theme) => new Set(item.evidence.map(evidence => evidence.interviewId)).size;
+
+function FindingsStage({ study, theme, index, onSelect, onPrevious, onNext, onEvidence, onStatus, onAdd, onAnalyse }: { study: Study; theme: Theme | null; index: number; onSelect: (index: number) => void; onPrevious: () => void; onNext: () => void; onEvidence: (evidence: Evidence) => void; onStatus: (id: string, status: ThemeStatus) => void; onAdd: () => void; onAnalyse: () => void }) {
   if (!study.interviews.length) return <EmptyStage eyebrow="STEP 1 · ADD INTERVIEWS" title="Add interviews before looking for patterns." text="Glean needs participant conversations before it can draft findings." action="Add first interview" onAction={onAdd}/>;
   if (!theme) return <EmptyStage eyebrow="STEP 2 · REVIEW FINDINGS" title="Your interviews are ready to analyse." text="Run analysis to surface early patterns linked to exact transcript quotes." action={`Analyse ${study.interviews.length} interviews`} onAction={onAnalyse}/>;
 
@@ -986,49 +1172,94 @@ function FindingsStage({ study, theme, index, onPrevious, onNext, onEvidence, on
   const covered = supporting.size;
   const total = study.interviews.length;
   const percent = total ? Math.round((covered / total) * 100) : 0;
+  const approved = study.themes.filter(item => item.status === "approved").length;
+  const rejected = study.themes.filter(item => item.status === "rejected").length;
+  const toReview = study.themes.length - approved - rejected;
 
   return <section className="finding-stage page-pad">
-    <div className="finding-nav">
-      <button disabled={index === 0} onClick={onPrevious}><ArrowLeft size={16}/><span>Previous finding</span></button>
-      <span>Finding {index + 1} of {study.themes.length}</span>
-      <button disabled={index === study.themes.length - 1} onClick={onNext}><span>Next finding</span><ArrowRight size={16}/></button>
-    </div>
+    <div className="finding-layout">
+      {/* Reviewing findings one at a time behind Previous/Next hid the shape of
+          the set: how many there are, which are still waiting on you, and how
+          the one on screen compares. The index makes the whole review legible
+          and turns "the third one, the pricing one" into a single click. */}
+      <aside className="finding-index" aria-label="Findings in this study">
+        <div className="finding-index-head">
+          <span className="eyebrow">FINDINGS</span>
+          <h2>{study.themes.length} in this study</h2>
+          <div className="finding-tally">
+            {toReview > 0 && <span className="tally-draft">{toReview} to review</span>}
+            {approved > 0 && <span className="tally-approved">{approved} approved</span>}
+            {rejected > 0 && <span className="tally-rejected">{rejected} rejected</span>}
+          </div>
+        </div>
+        <ol className="finding-index-list">
+          {study.themes.map((item, position) => {
+            const quoted = quotedIn(item);
+            return <li key={item.id}>
+              <button
+                className={`${position === index ? "active" : ""} ${item.status}`}
+                onClick={() => onSelect(position)}
+                aria-current={position === index ? "true" : undefined}
+              >
+                <span className="finding-index-num">{position + 1}</span>
+                <span className="finding-index-body">
+                  <b>{item.title}</b>
+                  <em><i className={`strength-dot ${item.strength}`} aria-hidden="true"/>{STRENGTH_LABEL[item.strength]} · {quoted} {quoted === 1 ? "participant" : "participants"}</em>
+                </span>
+                {item.status === "approved" && <Check size={15} aria-label="Approved"/>}
+                {item.status === "rejected" && <X size={15} aria-label="Rejected"/>}
+              </button>
+            </li>;
+          })}
+        </ol>
+      </aside>
 
-    <div className="finding-heading">
-      <div>
-        <span className="eyebrow">FINDING</span>
-        <h1>{theme.title}</h1>
-        <p>{theme.summary}</p>
-        <div className="finding-meta">
-          <span className={`strength-chip ${theme.strength}`}>{STRENGTH_LABEL[theme.strength]}</span>
-          {theme.status === "approved" && <span className="state-chip approved"><Check size={13}/>Approved</span>}
-          {theme.status === "rejected" && <span className="state-chip rejected"><X size={13}/>Rejected</span>}
+      <div className="finding-detail">
+        <div className="finding-nav">
+          <button disabled={index === 0} onClick={onPrevious}><ArrowLeft size={16}/><span>Previous finding</span></button>
+          <span>Finding {index + 1} of {study.themes.length}</span>
+          <button disabled={index === study.themes.length - 1} onClick={onNext}><span>Next finding</span><ArrowRight size={16}/></button>
+        </div>
+
+        <div className="finding-heading">
+          <div>
+            <span className="eyebrow">FINDING</span>
+            <h1>{theme.title}</h1>
+            <p>{theme.summary}</p>
+            <div className="finding-meta">
+              <span className={`strength-chip ${theme.strength}`}>{STRENGTH_LABEL[theme.strength]}</span>
+              {theme.status === "approved" && <span className="state-chip approved"><Check size={13}/>Approved</span>}
+              {theme.status === "rejected" && <span className="state-chip rejected"><X size={13}/>Rejected</span>}
+              {/* Tags were modelled and analysed on, but never shown. */}
+              {theme.tags.map(tag => <span className="tag-chip" key={tag}>{tag}</span>)}
+            </div>
+          </div>
+          <div className="coverage-block">
+            <span className="eyebrow">PARTICIPANT COVERAGE</span>
+            <div><b>{covered}</b><span>of {total} {total === 1 ? "participant" : "participants"} quoted<small>{percent}%</small></span></div>
+            <div className="avatar-row">
+              {study.interviews.slice(0, 6).map(interview =>
+                <span key={interview.id} className={supporting.has(interview.id) ? "included" : ""} title={`${interview.participant.code} · ${interview.participant.role}`}>
+                  {interview.participant.code.replace(/^P/, "")}
+                </span>)}
+            </div>
+          </div>
+        </div>
+
+        <section className="evidence-list">
+          <span className="eyebrow">{theme.evidence.length === 1 ? "EXACT QUOTE" : `EXACT QUOTES · ${theme.evidence.length}`}</span>
+          {theme.evidence.map(item => <QuoteBlock key={item.id} evidence={item} onOpen={() => onEvidence(item)}/>)}
+        </section>
+
+        <div className="finding-actions">
+          {theme.status === "approved" && <button className="approved-button" onClick={() => onStatus(theme.id, "draft")}><Check size={17}/>Approved · Move back to review</button>}
+          {theme.status === "rejected" && <button className="outline-button" onClick={() => onStatus(theme.id, "draft")}><ArrowLeft size={17}/>Rejected · Restore to review</button>}
+          {theme.status === "draft" && <>
+            <button className="text-button reject" onClick={() => onStatus(theme.id, "rejected")}><X size={17}/>Reject</button>
+            <button className="primary-button" onClick={() => onStatus(theme.id, "approved")}><Check size={17}/>Approve finding</button>
+          </>}
         </div>
       </div>
-      <div className="coverage-block">
-        <span className="eyebrow">PARTICIPANT COVERAGE</span>
-        <div><b>{covered}</b><span>of {total} {total === 1 ? "participant" : "participants"} quoted<small>{percent}%</small></span></div>
-        <div className="avatar-row">
-          {study.interviews.slice(0, 6).map(interview =>
-            <span key={interview.id} className={supporting.has(interview.id) ? "included" : ""} title={`${interview.participant.code} · ${interview.participant.role}`}>
-              {interview.participant.code.replace(/^P/, "")}
-            </span>)}
-        </div>
-      </div>
-    </div>
-
-    <section className="evidence-list">
-      <span className="eyebrow">{theme.evidence.length === 1 ? "EXACT QUOTE" : `EXACT QUOTES · ${theme.evidence.length}`}</span>
-      {theme.evidence.map(item => <QuoteBlock key={item.id} evidence={item} onOpen={() => onEvidence(item)}/>)}
-    </section>
-
-    <div className="finding-actions">
-      {theme.status === "approved" && <button className="approved-button" onClick={() => onStatus(theme.id, "draft")}><Check size={17}/>Approved · Move back to review</button>}
-      {theme.status === "rejected" && <button className="outline-button" onClick={() => onStatus(theme.id, "draft")}><ArrowLeft size={17}/>Rejected · Restore to review</button>}
-      {theme.status === "draft" && <>
-        <button className="text-button reject" onClick={() => onStatus(theme.id, "rejected")}><X size={17}/>Reject</button>
-        <button className="primary-button" onClick={() => onStatus(theme.id, "approved")}><Check size={17}/>Approve finding</button>
-      </>}
     </div>
   </section>;
 }
@@ -1325,25 +1556,202 @@ function inferRole(text: string) {
 
 
 
+type ChatTurn = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  citations?: Evidence[];
+  /** An answer the study could not support — rendered as a refusal, not a claim. */
+  unsupported?: boolean;
+};
+
+/**
+ * Two prompts answer from the shape of the evidence and so always work; the
+ * third is drawn from the study itself. Hardcoding a topic here means shipping
+ * a suggestion that gets refused whenever the loaded study is about something
+ * else — this sample study, for one, never mentions pricing.
+ */
+function chatSuggestions(study: Study) {
+  const topic = study.themes[0]?.title;
+  return [
+    "What should we change in onboarding?",
+    "Which problems have the strongest support?",
+    ...(topic ? [`What did people say about ${topic.toLowerCase()}?`] : [])
+  ];
+}
+
+/** Words that carry no signal when matching a question against a finding. */
+const CHAT_STOPWORDS = new Set([
+  "what", "which", "who", "when", "where", "why", "how", "the", "a", "an", "and", "or",
+  "is", "are", "was", "were", "do", "does", "did", "should", "would", "could", "can",
+  "we", "our", "us", "you", "they", "them", "it", "in", "on", "to", "of", "for", "from",
+  "about", "with", "that", "this", "have", "has", "had", "say", "said", "people", "users"
+]);
+
+const STRENGTH_RANK: Record<Strength, number> = { dominant: 3, recurring: 2, emerging: 1 };
+
+/** "Which problems have the strongest support?" is a ranking, not a keyword lookup. */
+const RANKING_INTENT = /\b(strongest|weakest|most|least|rank|confident|confidence|support|supported|evidence|recurring|dominant|common)\b/;
+/** "What should we change?" wants the reviewed findings, framed as actions. */
+const ACTION_INTENT = /\b(change|improve|fix|next|recommend|priorit|action)\b/;
+
+/**
+ * Answers are assembled from the study, never invented. A question that does
+ * not overlap any reviewed finding gets a refusal rather than a guess — that
+ * behaviour is the point of the feature, so the prototype models it too.
+ *
+ * Two intents are handled before keyword matching, because they are about the
+ * shape of the evidence rather than its wording and literal matching refuses
+ * them even when the study can answer.
+ */
+function answerFromStudy(question: string, study: Study): ChatTurn {
+  const id = `a-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const asked = question.toLowerCase();
+  const terms = asked.split(/[^a-z0-9]+/).filter(word => word.length > 2 && !CHAT_STOPWORDS.has(word));
+
+  if (!study.themes.length) {
+    return {
+      id,
+      role: "assistant",
+      unsupported: true,
+      text: "There are no reviewed findings in this study yet. Add interviews and run analysis, and I will only answer from what participants actually said."
+    };
+  }
+
+  if (RANKING_INTENT.test(asked)) {
+    const ranked = [...study.themes].sort((left, right) =>
+      STRENGTH_RANK[right.strength] - STRENGTH_RANK[left.strength] || right.participantCount - left.participantCount).slice(0, 2);
+    return {
+      id,
+      role: "assistant",
+      text: ranked.map(theme => `**${theme.title}** — ${theme.strength}, raised by ${theme.participantCount} of ${study.interviews.length} participants. ${theme.summary}`).join("\n\n"),
+      citations: ranked.flatMap(theme => theme.evidence.slice(0, 1))
+    };
+  }
+
+  if (ACTION_INTENT.test(asked)) {
+    const reviewed = study.themes.filter(theme => theme.status === "approved");
+    const basis = reviewed.length ? reviewed : study.themes;
+    const caveat = reviewed.length
+      ? ""
+      : "\n\nNothing here is approved yet, so treat these as candidates rather than conclusions.";
+    return {
+      id,
+      role: "assistant",
+      text: basis.slice(0, 2).map(theme => `**${theme.title}** — ${theme.summary}`).join("\n\n") + caveat,
+      citations: basis.slice(0, 2).flatMap(theme => theme.evidence.slice(0, 1))
+    };
+  }
+
+  const scored = study.themes.map(theme => {
+    const haystack = `${theme.title} ${theme.summary} ${theme.tags.join(" ")} ${theme.evidence.map(item => `${item.quote} ${item.context}`).join(" ")}`.toLowerCase();
+    // Match on a light stem so "problems" finds "problem" and "pricing" finds "price".
+    const hits = terms.filter(term => haystack.includes(term.replace(/(ing|es|s)$/, ""))).length;
+    // Approved findings break ties only among findings the question actually
+    // touched — a status bonus on a zero-hit finding would answer questions the
+    // study says nothing about.
+    return { theme, hits, score: hits ? hits * 2 + (theme.status === "approved" ? 1 : 0) : 0 };
+  }).sort((left, right) => right.score - left.score);
+
+  const best = scored[0];
+  if (!best || best.hits === 0) {
+    return {
+      id,
+      role: "assistant",
+      unsupported: true,
+      text: `Nothing in these ${study.interviews.length} ${study.interviews.length === 1 ? "interview" : "interviews"} speaks to that. I would rather say so than stretch a quote to fit. Try asking about ${study.themes.slice(0, 2).map(theme => `“${theme.title.toLowerCase()}”`).join(" or ")}.`
+    };
+  }
+
+  const supporting = scored.filter(entry => entry.hits > 0).slice(0, 2);
+  const lead = supporting.map(entry => `**${entry.theme.title}** — ${entry.theme.summary}`).join("\n\n");
+  return {
+    id,
+    role: "assistant",
+    text: lead,
+    citations: supporting.flatMap(entry => entry.theme.evidence.slice(0, 2))
+  };
+}
+
 function ChatModal({ study, onClose, onReview }: { study: Study; onClose: () => void; onReview: () => void }) {
-  const approved = study.themes.filter(theme => theme.status === "approved");
-  const finding = approved[0] ?? study.themes[0];
-  const quote = finding?.evidence[0];
+  const [turns, setTurns] = useState<ChatTurn[]>([]);
+  const [draft, setDraft] = useState("");
+  const [thinking, setThinking] = useState(false);
+  const threadRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLInputElement>(null);
+  const replyTimer = useRef<number | undefined>(undefined);
+
+  useEffect(() => () => window.clearTimeout(replyTimer.current), []);
+
+  // Keep the newest turn in view as the thread grows.
+  useEffect(() => {
+    const thread = threadRef.current;
+    if (thread) thread.scrollTop = thread.scrollHeight;
+  }, [turns, thinking]);
+
+  const ask = (question: string) => {
+    const text = question.trim();
+    if (!text || thinking) return;
+    setDraft("");
+    setTurns(current => [...current, { id: `q-${Date.now()}`, role: "user", text }]);
+    setThinking(true);
+    // Sending empties the draft, which disables the Send button. Without this
+    // the browser drops focus onto <body>, outside the dialog's focus trap, so
+    // Escape stops closing it and Tab restarts from the top of the page.
+    composerRef.current?.focus();
+    // A short pause so the answer reads as a response rather than a lookup.
+    replyTimer.current = window.setTimeout(() => {
+      setTurns(current => [...current, answerFromStudy(text, study)]);
+      setThinking(false);
+    }, 550);
+  };
+
   return <Dialog className="chat-modal" eyebrow="STUDY CHAT" title="Ask Glean" onClose={onClose} footer={
-    <label className="chat-input"><input placeholder="Chat is not available yet" disabled/><button className="primary-button" disabled><SendHorizontal size={16}/>Send</button></label>
+    <form className="chat-input" onSubmit={event => { event.preventDefault(); ask(draft); }}>
+      <input
+        ref={composerRef}
+        value={draft}
+        onChange={event => setDraft(event.target.value)}
+        placeholder="Ask about this study…"
+        aria-label="Ask about this study"
+      />
+      <button className="primary-button" type="submit" disabled={!draft.trim() || thinking} aria-label="Send"><SendHorizontal size={16}/>Send</button>
+    </form>
   }>
-    <div className="chat-body">
-      <div className="chat-message user">What should we change in onboarding?</div>
-      <div className="chat-message assistant">
-        <b>Example answer</b>
-        <p>{finding
-          ? "Chat cannot answer from your study yet. When it can, every answer will cite the exact quotes it drew on, and refuse to answer where the interviews do not support a conclusion."
-          : "There is not enough interview evidence yet. Add interviews and review findings before Glean can answer from the study."}</p>
-        {quote && <button className="citation-chip" onClick={onReview}><Quote size={14}/>{quote.participantCode} · {quote.segmentId}</button>}
-      </div>
-      <div className="chat-limits"><LockKeyhole size={16}/><span><b>This is a preview of the intended interaction.</b><small>Nothing here is generated from your study. Production chat still needs retrieval, citations, refusal behaviour, and answer validation.</small></span></div>
+    <div className="chat-body" ref={threadRef}>
+      {turns.length === 0 && <div className="chat-opening">
+        <span className="chat-mark"><Bot size={22}/></span>
+        <b>Ask anything about {study.title}</b>
+        <p>Answers are drawn only from your {study.interviews.length} {study.interviews.length === 1 ? "interview" : "interviews"} and {study.themes.length} {study.themes.length === 1 ? "finding" : "findings"}, and cite the quotes behind them.</p>
+        <div className="chat-suggestions">
+          {chatSuggestions(study).map(suggestion => <button key={suggestion} type="button" onClick={() => ask(suggestion)}>{suggestion}</button>)}
+        </div>
+      </div>}
+
+      {turns.map(turn => turn.role === "user"
+        ? <div key={turn.id} className="chat-message user">{turn.text}</div>
+        : <div key={turn.id} className={`chat-message assistant ${turn.unsupported ? "unsupported" : ""}`}>
+            {turn.unsupported && <b><LockKeyhole size={14}/>Not supported by this study</b>}
+            {turn.text.split("\n\n").map((paragraph, index) => <p key={index}>{renderChatText(paragraph)}</p>)}
+            {turn.citations && turn.citations.length > 0 && <div className="chat-citations">
+              {turn.citations.map(citation => <button key={citation.id} type="button" className="citation-chip" onClick={onReview} title={citation.quote}>
+                <Quote size={14}/>{citation.participantCode} · {citation.segmentId}
+              </button>)}
+            </div>}
+          </div>)}
+
+      {thinking && <div className="chat-message assistant thinking" aria-live="polite"><span/><span/><span/></div>}
+
+      {turns.length > 0 && <div className="chat-limits"><LockKeyhole size={16}/><span><b>Prototype retrieval.</b><small>Answers are matched against your findings on this device. Production chat still needs real retrieval, answer validation, and refusal review.</small></span></div>}
     </div>
   </Dialog>;
+}
+
+/** Minimal **bold** support so a finding title can lead its own paragraph. */
+function renderChatText(text: string) {
+  return text.split(/(\*\*[^*]+\*\*)/g).map((part, index) => part.startsWith("**") && part.endsWith("**")
+    ? <b key={index}>{part.slice(2, -2)}</b>
+    : <span key={index}>{part}</span>);
 }
 
 function SettingsModal({ onClose, onSave }: { onClose: () => void; onSave: () => void }) {
@@ -1363,6 +1771,10 @@ function SettingsModal({ onClose, onSave }: { onClose: () => void; onSave: () =>
       <div className="settings-account"><span>MA</span><div><b>Matilda Anashie</b><small>Solo researcher workspace</small></div></div>
     </section>
   </Dialog>;
+}
+
+function JourneyLine({ number, title, text, complete }: { number: string; title: string; text: string; complete: boolean }) {
+  return <div className="journey-line"><span>{complete ? <Check size={17}/> : number}</span><div><b>{title}</b><small>{text}</small></div></div>;
 }
 
 function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm }: { title: string; body: string; confirmLabel: string; onCancel: () => void; onConfirm: () => void }) {

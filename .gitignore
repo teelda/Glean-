@@ -13,3 +13,8 @@ tsconfig.tsbuildinfo
 # Local form backend store — contains real respondent answers.
 tmp/
 .vercel
+
+# End-to-end dev servers build here, one directory each.
+.next-e2e-*
+test-results/
+playwright-report/

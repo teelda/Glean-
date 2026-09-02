@@ -6,9 +6,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:all": "vitest run && playwright test"
   },
   "dependencies": {
+    "@supabase/ssr": "^0.12.5",
     "@supabase/supabase-js": "^2.49.4",
     "lucide-react": "^0.468.0",
     "mammoth": "^1.12.0",
@@ -19,9 +22,11 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/node": "^22.10.5",
     "@types/react": "^19.0.3",
     "@types/react-dom": "^19.0.2",
+    "playwright": "^1.62.1",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }
