@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { backendMode, publishForm } from "@/lib/form-backend";
+import { requireUser, UnauthorizedError } from "@/lib/auth";
 
 const questionSchema = z.object({
   id: z.string(),
@@ -23,10 +24,16 @@ const publishSchema = z.object({
 
 export async function POST(request: Request) {
   try {
+    // Publishing mints a public link to a form and stamps its owner, so it
+    // must never run for an anonymous caller.
+    const user = await requireUser();
     const payload = publishSchema.parse(await request.json());
-    const form = await publishForm(payload);
+    const form = await publishForm({ ...payload, ownerId: user.id });
     return NextResponse.json({ form, mode: backendMode() });
   } catch (error) {
+    if (error instanceof UnauthorizedError) {
+      return NextResponse.json({ error: error.message }, { status: 401 });
+    }
     return NextResponse.json({ error: error instanceof Error ? error.message : "Could not publish form" }, { status: 400 });
   }
 }

@@ -15,6 +15,7 @@ export type BackendQuestion = {
 export type BackendSection = { id: string; title: string; questions: BackendQuestion[] };
 export type BackendForm = {
   id: string;
+  ownerId?: string;
   slug: string;
   name: string;
   sections: BackendSection[];
@@ -86,7 +87,16 @@ const toPublicForm = (form: BackendForm): PublicForm => ({
   sections: form.sections
 });
 
-export async function publishForm(input: { name: string; slug: string; sections: BackendSection[]; formId?: string }) {
+/**
+ * Create or update a form owned by `ownerId`.
+ *
+ * The client here is the service-role client, which bypasses row-level
+ * security — so migration 002's "owners manage research forms" policy does NOT
+ * protect this path. Ownership is enforced in the query instead: the update is
+ * scoped by owner_id so a caller cannot overwrite someone else's form by
+ * passing its id, and the insert stamps owner_id so no new row is left NULL.
+ */
+export async function publishForm(input: { name: string; slug: string; sections: BackendSection[]; formId?: string; ownerId: string }) {
   const now = new Date().toISOString();
   const supabase = supabaseAdmin();
 
@@ -98,13 +108,17 @@ export async function publishForm(input: { name: string; slug: string; sections:
         .from("research_forms")
         .update({ name: input.name, slug: input.slug, sections: input.sections, status: "published", updated_at: now })
         .eq("id", input.formId)
+        .eq("owner_id", input.ownerId)
         .select("id, slug, name, sections, status, public_token, created_at, updated_at")
         .single();
       if (!error && data) return mapSupabaseForm(data);
+      // No row matched: either the id does not exist or it belongs to someone
+      // else. Falling through to insert would mint a copy, so refuse instead.
+      throw new Error("That form could not be updated.");
     }
     const { data, error } = await supabase
       .from("research_forms")
-      .insert({ name: input.name, slug: input.slug, sections: input.sections, status: "published", public_token: createPublicToken() })
+      .insert({ owner_id: input.ownerId, name: input.name, slug: input.slug, sections: input.sections, status: "published", public_token: createPublicToken() })
       .select("id, slug, name, sections, status, public_token, created_at, updated_at")
       .single();
     if (error) throw new Error(error.message);
@@ -113,7 +127,10 @@ export async function publishForm(input: { name: string; slug: string; sections:
 
   assertLocalStoreUsable();
   const store = await readStore();
-  const existing = input.formId ? store.forms.find(form => form.id === input.formId) : undefined;
+  const existing = input.formId
+    ? store.forms.find(form => form.id === input.formId && form.ownerId === input.ownerId)
+    : undefined;
+  if (input.formId && !existing) throw new Error("That form could not be updated.");
   if (existing) {
     existing.name = input.name;
     existing.slug = input.slug;
@@ -125,6 +142,7 @@ export async function publishForm(input: { name: string; slug: string; sections:
   }
   const form: BackendForm = {
     id: randomUUID(),
+    ownerId: input.ownerId,
     slug: input.slug,
     name: input.name,
     sections: input.sections,
@@ -193,11 +211,27 @@ export async function submitResponse(token: string, answers: Record<string, stri
  * returned every response in the database when it was omitted. Responses never
  * carry the form's public token — that token is the credential that grants
  * read and submit access, and it must not travel in a listing.
+ *
+ * `ownerId` is required for the same class of reason. A form id is not a
+ * secret — it is handed to the browser on publish — so scoping by form alone
+ * let any caller read another researcher's respondent answers by supplying an
+ * id. The service-role client bypasses RLS, so this check has to happen here.
  */
-export async function listResponses(formId: string): Promise<BackendResponse[]> {
+export async function listResponses(formId: string, ownerId: string): Promise<BackendResponse[]> {
   if (!formId) throw new Error("A form id is required to list responses.");
+  if (!ownerId) throw new Error("An owner is required to list responses.");
   const supabase = supabaseAdmin();
   if (supabase) {
+    const { data: owned } = await supabase
+      .from("research_forms")
+      .select("id")
+      .eq("id", formId)
+      .eq("owner_id", ownerId)
+      .maybeSingle();
+    // Not yours (or not a real form): answer as if it has no responses rather
+    // than confirming the id exists.
+    if (!owned) return [];
+
     const { data, error } = await supabase
       .from("form_responses")
       .select("id, form_id, answers, created_at")
@@ -214,17 +248,19 @@ export async function listResponses(formId: string): Promise<BackendResponse[]> 
 
   assertLocalStoreUsable();
   const store = await readStore();
+  if (!store.forms.some(form => form.id === formId && form.ownerId === ownerId)) return [];
   return store.responses
     .filter(response => response.formId === formId)
     .map(({ id, formId: form, answers, createdAt }) => ({ id, formId: form, answers, createdAt } satisfies BackendResponse));
 }
 
 function mapSupabaseForm(data: {
-  id: string; slug: string; name: string; sections: BackendSection[] | null;
+  id: string; owner_id?: string | null; slug: string; name: string; sections: BackendSection[] | null;
   status: BackendForm["status"]; public_token: string | null; created_at: string; updated_at: string;
 }): BackendForm {
   return {
     id: data.id,
+    ownerId: data.owner_id ?? undefined,
     slug: data.slug,
     name: data.name,
     sections: data.sections ?? [],
