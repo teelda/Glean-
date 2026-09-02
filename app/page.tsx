@@ -58,6 +58,18 @@ export default function GleanApp() {
   // null = follow the area default (the builder wants the room, so Forms
   // collapses the rail to icons); true/false = the person overrode it.
   const [navOverride, setNavOverride] = useState<boolean | null>(null);
+  const [prefs, setPrefs] = useState<Preferences>(DEFAULT_PREFERENCES);
+
+  useEffect(() => setPrefs(readPreferences()), []);
+
+  const updatePrefs = useCallback((patch: Partial<Preferences>, message: string) => {
+    setPrefs(current => {
+      const next = { ...current, ...patch };
+      window.localStorage.setItem(PREFERENCES_KEY, JSON.stringify(next));
+      return next;
+    });
+    notify(message);
+  }, []);
   const [toast, setToast] = useState("");
   const [showWelcome, setShowWelcome] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -285,7 +297,7 @@ export default function GleanApp() {
     notify("Word report downloaded");
   };
 
-  const navCollapsed = navOverride ?? area === "forms";
+  const navCollapsed = navOverride ?? (prefs.autoCollapseNav && area === "forms");
 
   return <div className={`glean-app ${navCollapsed ? "nav-collapsed" : ""}`}>
     {mobileNav && <button className="nav-scrim" aria-label="Close navigation" onClick={() => setMobileNav(false)}/>} 
@@ -320,7 +332,7 @@ export default function GleanApp() {
         onAnalyse={analyse}
       />} 
       {area === "help" && <HelpView onForms={() => openArea("forms")} onInterviews={() => openStudy("interviews")} onSettings={() => openArea("settings")}/>}
-      {area === "settings" && <SettingsView user={user} study={study} onSignOut={signOut} onNotify={notify} onReset={() => startNewStudy("studies")} onExportCsv={exportEvidence} onExportWord={exportWord}/>}
+      {area === "settings" && <SettingsView user={user} study={study} prefs={prefs} onUpdate={updatePrefs} onSignOut={signOut} onReset={() => startNewStudy("studies")} onExportCsv={exportEvidence} onExportWord={exportWord}/>}
       {area === "study" && stage === "report" && <ReportStage study={study} onReview={() => setStage("findings")} onExport={() => setShowExport(value => !value)} exportOpen={showExport} onPdf={() => { window.print(); setShowExport(false); }} onWord={exportWord} onCsv={exportEvidence}/>} 
     </main>
 
@@ -1754,23 +1766,200 @@ function renderChatText(text: string) {
     : <span key={index}>{part}</span>);
 }
 
-function SettingsModal({ onClose, onSave }: { onClose: () => void; onSave: () => void }) {
-  const [autoRedact, setAutoRedact] = useState(true);
-  const [quoteMode, setQuoteMode] = useState(true);
-  return <Dialog variant="panel" className="settings-panel" eyebrow="WORKSPACE SETTINGS" title="Settings" onClose={onClose} footer={<>
-    <button className="text-button" onClick={onClose}>Cancel</button>
-    <button className="primary-button" onClick={onSave}>Save settings</button>
-  </>}>
-    <section>
-      <h3>Analysis</h3>
-      <label className="switch-row"><span><b>Redact personal details</b><small>Use a private analysis copy by default.</small></span><input type="checkbox" checked={autoRedact} onChange={event => setAutoRedact(event.target.checked)}/></label>
-      <label className="switch-row"><span><b>Require exact quotes</b><small>Hide findings that are not linked to a transcript passage.</small></span><input type="checkbox" checked={quoteMode} onChange={event => setQuoteMode(event.target.checked)}/></label>
-    </section>
-    <section>
-      <h3>Workspace</h3>
-      <div className="settings-account"><span>MA</span><div><b>Matilda Anashie</b><small>Solo researcher workspace</small></div></div>
-    </section>
-  </Dialog>;
+/** Preferences that outlive a reload. The modal these replace forgot everything. */
+type Preferences = { autoRedact: boolean; quoteMode: boolean; autoCollapseNav: boolean };
+const DEFAULT_PREFERENCES: Preferences = { autoRedact: true, quoteMode: true, autoCollapseNav: true };
+const PREFERENCES_KEY = "glean-preferences-v1";
+
+function readPreferences(): Preferences {
+  try {
+    const raw = window.localStorage.getItem(PREFERENCES_KEY);
+    return raw ? { ...DEFAULT_PREFERENCES, ...JSON.parse(raw) } : DEFAULT_PREFERENCES;
+  } catch {
+    return DEFAULT_PREFERENCES;
+  }
+}
+
+function SettingsView({ user, study, prefs, onUpdate, onSignOut, onReset, onExportCsv, onExportWord }: {
+  user: SessionUser | null; study: Study; prefs: Preferences;
+  onUpdate: (patch: Partial<Preferences>, message: string) => void;
+  onSignOut: () => void; onReset: () => void; onExportCsv: () => void; onExportWord: () => void;
+}) {
+  // Saved on change rather than behind a Save button: there is nothing here a
+  // person would want to fill in and then discard.
+  const update = onUpdate;
+
+  const evidenceCount = study.themes.reduce((total, theme) => total + theme.evidence.length, 0);
+
+  return <section className="settings-view page-pad">
+    <div className="research-header">
+      <div>
+        <span className="eyebrow">WORKSPACE</span>
+        <h1>Settings</h1>
+        <p>Preferences apply to this workspace and are stored in this browser. Nothing here is shared with respondents.</p>
+      </div>
+    </div>
+
+    <div className="settings-grid">
+      <div className="settings-main">
+        <section className="settings-card">
+          <div className="settings-card-head"><span className="eyebrow">ACCOUNT</span><h2>Who you are signed in as</h2></div>
+          <div className="settings-account">
+            <span>{initialsFor(user?.email ?? null)}</span>
+            <div><b>{user?.email ?? "Not signed in"}</b><small>{user ? "Solo researcher workspace" : "Sign in to keep your study across devices"}</small></div>
+            <button className="outline-button" onClick={onSignOut}><LogOut size={15}/>{user ? "Sign out" : "Sign in"}</button>
+          </div>
+        </section>
+
+        <section className="settings-card">
+          <div className="settings-card-head"><span className="eyebrow">ANALYSIS</span><h2>How findings are produced</h2></div>
+          <label className="switch-row">
+            <span><b>Redact personal details</b><small>Analyse a copy with names, emails and phone numbers masked. The original transcript is untouched.</small></span>
+            <input type="checkbox" checked={prefs.autoRedact} onChange={event => update({ autoRedact: event.target.checked }, event.target.checked ? "Redaction on" : "Redaction off")}/>
+          </label>
+          <label className="switch-row">
+            <span><b>Require exact quotes</b><small>Hide any finding that is not tied to a passage in a transcript. Turning this off allows findings you cannot check.</small></span>
+            <input type="checkbox" checked={prefs.quoteMode} onChange={event => update({ quoteMode: event.target.checked }, event.target.checked ? "Exact quotes required" : "Exact quotes no longer required")}/>
+          </label>
+        </section>
+
+        <section className="settings-card">
+          <div className="settings-card-head"><span className="eyebrow">WORKSPACE</span><h2>Layout</h2></div>
+          <label className="switch-row">
+            <span><b>Collapse the sidebar in Forms</b><small>The form builder is the widest screen in Glean, so the navigation drops to icons when you open it. You can always toggle it by hand.</small></span>
+            <input type="checkbox" checked={prefs.autoCollapseNav} onChange={event => update({ autoCollapseNav: event.target.checked }, event.target.checked ? "Sidebar will collapse in Forms" : "Sidebar will stay open")}/>
+          </label>
+        </section>
+
+        <section className="settings-card danger-card">
+          <div className="settings-card-head"><span className="eyebrow">DATA</span><h2>Export or clear this workspace</h2></div>
+          <p className="settings-note">This workspace holds {study.interviews.length} {study.interviews.length === 1 ? "interview" : "interviews"}, {study.themes.length} {study.themes.length === 1 ? "finding" : "findings"} and {evidenceCount} {evidenceCount === 1 ? "quote" : "quotes"}. Export before you clear it — starting a new study cannot be undone.</p>
+          <div className="settings-actions">
+            <button className="outline-button" onClick={onExportCsv}><Download size={15}/>Evidence CSV</button>
+            <button className="outline-button" onClick={onExportWord}><FileText size={15}/>Word report</button>
+            <button className="danger-button" onClick={onReset}><Trash2 size={15}/>Start a new study</button>
+          </div>
+        </section>
+      </div>
+
+      <aside className="settings-side">
+        <section>
+          <span className="eyebrow">WHERE YOUR DATA LIVES</span>
+          <h2>This browser, this account</h2>
+          <p>Interviews, findings and preferences are stored locally under your account key. Signing out leaves them in place; another account on this machine starts with an empty workspace.</p>
+        </section>
+        <section>
+          <span className="eyebrow">NOT YET REAL</span>
+          <h2>Prototype limits</h2>
+          <p>Redaction and exact-quote enforcement are recorded here but not yet applied by the analysis step. Study chat matches on this device rather than retrieving from a server.</p>
+        </section>
+      </aside>
+    </div>
+  </section>;
+}
+
+const HELP_TOPICS = [
+  {
+    id: "start",
+    icon: Sprout,
+    question: "How do I run a study from start to finish?",
+    answer: "Add five to twenty interview transcripts, run analysis to group them into findings, approve the findings the quotes actually support, then open the report. The three steps in the sidebar follow that order and show how far along you are."
+  },
+  {
+    id: "interviews",
+    icon: MessageSquareText,
+    question: "What can I upload as an interview?",
+    answer: "Paste a transcript, or drop in a TXT, DOCX or PDF. Each becomes one participant. Analysis needs the words people used, so a summary or a notes doc will produce weaker findings than a real transcript."
+  },
+  {
+    id: "findings",
+    icon: Lightbulb,
+    question: "Why does every finding show quotes?",
+    answer: "A finding is a claim about what participants said, and a claim you cannot check is not worth putting in a report. Open any finding to see the passages behind it, and approve only the ones the evidence supports. Rejecting a finding keeps it out of the report."
+  },
+  {
+    id: "forms",
+    icon: ClipboardList,
+    question: "How do research forms work?",
+    answer: "Import a research plan or describe your goal, audience and decision, and Glean drafts sections and questions you can edit. Publishing gives you a link that shows respondents only the form — never your builder, drafts or review notes. Publishing again updates the same form and keeps the responses you already have."
+  },
+  {
+    id: "report",
+    icon: FileText,
+    question: "What ends up in the exported report?",
+    answer: "Approved findings, their quotes and the participant codes attached to them. Raw transcripts are never included. You can export the evidence as CSV, the report as a Word document, or print to PDF."
+  },
+  {
+    id: "privacy",
+    icon: LockKeyhole,
+    question: "Where is my research stored?",
+    answer: "In this browser, under the account you signed in with. It is not uploaded for analysis in this prototype, and it is not visible to anyone who opens a published form link."
+  },
+  {
+    id: "chat",
+    icon: Bot,
+    question: "Why does Ask Glean refuse some questions?",
+    answer: "It answers only from your interviews and findings. When a question does not overlap anything participants said, it says so rather than guessing — a confident answer with no evidence behind it is the failure mode worth avoiding."
+  }
+] as const;
+
+function HelpView({ onForms, onInterviews, onSettings }: { onForms: () => void; onInterviews: () => void; onSettings: () => void }) {
+  const [query, setQuery] = useState("");
+  const [openTopic, setOpenTopic] = useState<string | null>(HELP_TOPICS[0].id);
+
+  const needle = query.trim().toLowerCase();
+  const matches = needle
+    ? HELP_TOPICS.filter(topic => `${topic.question} ${topic.answer}`.toLowerCase().includes(needle))
+    : HELP_TOPICS;
+
+  return <section className="help-view page-pad">
+    <div className="research-header">
+      <div>
+        <span className="eyebrow">HELP</span>
+        <h1>How Glean works.</h1>
+        <p>Short answers to the questions that come up while running a study. Everything here describes what the app does today, not what is planned.</p>
+      </div>
+      <label className="search-field compact">
+        <Search size={17}/>
+        <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search help" aria-label="Search help"/>
+      </label>
+    </div>
+
+    <div className="help-grid">
+      <div className="help-main">
+        {matches.length === 0
+          ? <div className="empty-search"><Search size={26}/><h3>Nothing matches “{query}”</h3><p>Try a word from the question you have, like “quotes”, “form”, or “export”.</p></div>
+          : matches.map(topic => {
+              const Icon = topic.icon;
+              const open = openTopic === topic.id;
+              return <article key={topic.id} className={`help-topic ${open ? "open" : ""}`}>
+                <button aria-expanded={open} onClick={() => setOpenTopic(open ? null : topic.id)}>
+                  <span className="help-topic-icon"><Icon size={18}/></span>
+                  <b>{topic.question}</b>
+                  <ChevronDown size={18} aria-hidden="true"/>
+                </button>
+                {open && <p>{topic.answer}</p>}
+              </article>;
+            })}
+      </div>
+
+      <aside className="help-side">
+        <section>
+          <span className="eyebrow">JUMP BACK IN</span>
+          <h2>Common next steps</h2>
+          <button className="text-button" onClick={onInterviews}><Upload size={15}/>Add interviews</button>
+          <button className="text-button" onClick={onForms}><ClipboardList size={15}/>Create a form</button>
+          <button className="text-button" onClick={onSettings}><Settings size={15}/>Open settings</button>
+        </section>
+        <section>
+          <span className="eyebrow">STILL STUCK</span>
+          <h2>Ask a person</h2>
+          <p>Glean is an early prototype and some paths are not built yet. If something looks broken rather than unfinished, send the study title and what you expected to happen.</p>
+          <a className="outline-button" href="mailto:hello@folde.studio?subject=Glean%20feedback"><SendHorizontal size={15}/>Email the team</a>
+        </section>
+      </aside>
+    </div>
+  </section>;
 }
 
 function JourneyLine({ number, title, text, complete }: { number: string; title: string; text: string; complete: boolean }) {

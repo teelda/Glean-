@@ -4529,3 +4529,178 @@
     height: var(--tap);
   }
 }
+
+/* ===========================================================================
+   SETTINGS AND HELP
+   Both were dead ends before: Help fired a toast, Settings opened a drawer
+   that forgot every choice on close. They are pages now, and they reuse the
+   two-column research layout so they sit inside the app rather than beside it.
+   =========================================================================== */
+.settings-view, .help-view { display: grid; gap: var(--s-10) }
+
+.settings-grid, .help-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: var(--s-8);
+  align-items: start;
+}
+.settings-main { display: grid; gap: var(--s-5) }
+
+.settings-card {
+  padding: var(--s-6);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xl);
+  background: #fff;
+}
+.settings-card-head { margin-bottom: var(--s-4) }
+.settings-card-head h2 {
+  margin: var(--s-2) 0 0;
+  font-size: var(--t-h4);
+  font-weight: 500;
+  letter-spacing: var(--tr-h2);
+}
+/* The switch rows carry their own bottom margin; drop it on the last one so
+   the card does not end with a stray 10px. */
+.settings-card .switch-row:last-child { margin-bottom: 0 }
+
+.settings-card .settings-account {
+  padding: var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--soft);
+}
+.settings-card .settings-account > div { flex: 1; min-width: 0 }
+.settings-card .settings-account b { overflow-wrap: anywhere }
+
+.settings-note {
+  margin: 0 0 var(--s-4);
+  font-size: var(--t-caption);
+  line-height: 1.6;
+  color: var(--muted);
+}
+.settings-actions { display: flex; flex-wrap: wrap; gap: var(--s-2) }
+.danger-card { border-color: var(--danger-line); background: var(--danger-tint) }
+.danger-card .settings-account, .danger-card .outline-button { background: #fff }
+
+.settings-side, .help-side { display: grid; gap: var(--s-5); position: sticky; top: calc(76px + var(--s-5)) }
+.settings-side section, .help-side section {
+  display: grid;
+  gap: var(--s-2);
+  justify-items: start;
+  padding: var(--s-6);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xl);
+  background: var(--soft);
+}
+.settings-side h2, .help-side h2 {
+  margin: var(--s-1) 0 0;
+  font-size: var(--t-h4);
+  font-weight: 500;
+  letter-spacing: var(--tr-h2);
+}
+.settings-side p, .help-side p {
+  margin: 0;
+  font-size: var(--t-caption);
+  line-height: 1.6;
+  color: var(--muted);
+}
+.help-side .text-button, .help-side .outline-button { margin-top: var(--s-1) }
+.help-side .outline-button { text-decoration: none }
+
+/* --- help topics ---------------------------------------------------------- */
+.help-main { display: grid; gap: var(--s-3) }
+.help-topic {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: #fff;
+  overflow: hidden;
+}
+.help-topic.open { border-color: var(--line-strong) }
+.help-topic > button {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-4) var(--s-5);
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.help-topic > button:hover { background: var(--soft) }
+.help-topic > button b { font-size: var(--t-sm); font-weight: 500; line-height: 1.4 }
+.help-topic > button > svg:last-child { color: var(--stone); transition: transform .15s ease }
+.help-topic.open > button > svg:last-child { transform: rotate(180deg) }
+.help-topic-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-pill);
+  background: var(--lavender);
+  color: var(--lilac-ink);
+}
+.help-topic > p {
+  margin: 0;
+  padding: 0 var(--s-5) var(--s-5) calc(var(--s-5) + 34px + var(--s-3));
+  font-size: var(--t-caption);
+  line-height: 1.65;
+  color: var(--ink-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .help-topic > button > svg:last-child { transition: none }
+}
+
+@media (max-width: 1100px) {
+  .settings-grid, .help-grid { grid-template-columns: minmax(0, 1fr) }
+  .settings-side, .help-side { position: static }
+}
+@media (max-width: 760px) {
+  .settings-view, .help-view { gap: var(--s-8) }
+  .settings-card, .settings-side section, .help-side section { padding: var(--s-5) }
+  .settings-card .settings-account { flex-wrap: wrap }
+  .settings-actions > * { flex: 1 1 100% }
+  .help-topic > p { padding-left: var(--s-5) }
+}
+
+/* The grid gap already spaces these pages; the header's own 48px margin was
+   stacking on top of it. */
+.settings-view .research-header, .help-view .research-header { margin-bottom: 0 }
+
+/* Real toggles. These were bare checkboxes stretched to 38x22, which reads as
+   a squashed tick box rather than an on/off control. */
+.switch-row input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  position: relative;
+  width: 40px;
+  height: 24px;
+  margin: 0;
+  border-radius: var(--r-pill);
+  background: var(--line-strong);
+  cursor: pointer;
+  transition: background .15s ease;
+}
+.switch-row input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-pill);
+  background: #fff;
+  box-shadow: var(--e-1);
+  transition: transform .15s ease;
+}
+.switch-row input[type="checkbox"]:checked { background: var(--green) }
+.switch-row input[type="checkbox"]:checked::after { transform: translateX(16px) }
+.switch-row input[type="checkbox"]:focus-visible { outline: none; box-shadow: var(--focus-ring) }
+
+@media (prefers-reduced-motion: reduce) {
+  .switch-row input[type="checkbox"],
+  .switch-row input[type="checkbox"]::after { transition: none }
+}
