@@ -2,4 +2,13 @@ node_modules/
 .next/
 .open-next/
 .pnpm-store/
+dist/
+output/
+.openai/
+.vercel/
+.env*
 .DS_Store
+tsconfig.tsbuildinfo
+
+# Local form backend store — contains real respondent answers.
+tmp/

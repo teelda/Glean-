@@ -1,9 +1,146 @@
-:root{--ink:#0b0b3b;--muted:#66677e;--line:#e7e7ef;--soft:#fafafe;--yellow:#ffd23f;--yellow-soft:#fff7cf;--mint:#e7f7f1;--lavender:#f0edff;--green:#2d9475;--danger:#b53b4a}
-*{box-sizing:border-box}
-html,body{margin:0;min-height:100%;background:#fff;color:var(--ink);font-family:Inter,"DM Sans",ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
-button,input,textarea,select{font:inherit;color:inherit}
-button{cursor:pointer}
-button:disabled{cursor:not-allowed;opacity:.45}
-input,textarea,select{width:100%}
-body{overflow-x:hidden}
-@media print{.glean-sidebar,.glean-topbar,.report-outline,.report-actions,.glean-toast{display:none!important}.glean-main{margin:0!important}.report-stage{display:block!important}.report-document{max-width:760px!important;margin:auto!important;padding:24px!important}}
+/* ---------------------------------------------------------------------------
+   Glean design tokens.
+
+   Every colour in glean.css resolves through this block. If you need a value
+   that isn't here, add a token — a new literal is how the palette drifted to
+   70 near-identical greys the first time.
+   --------------------------------------------------------------------------- */
+:root {
+  /* Ink ---------------------------------------------------------------- */
+  --ink: #0b0b3b;          /* headings, primary surfaces */
+  --ink-2: #33344d;        /* body copy on light ground */
+  --muted: #66677e;        /* secondary copy, captions, eyebrows */
+
+  /* Lines and grounds --------------------------------------------------- */
+  --line: #e7e7ef;         /* default hairline */
+  --line-strong: #bfc0cf;  /* button and input borders */
+  --soft: #fafafe;         /* hover fills, quiet panels */
+
+  /* Brand --------------------------------------------------------------- */
+  --yellow: #ffd23f;       /* review stage, primary accent */
+  --yellow-soft: #fff7cf;  /* review fills */
+  --yellow-deep: #e7bb10;  /* accent borders and icons on light fills */
+  --amber-text: #6b4d00;   /* readable text on a yellow fill */
+
+  /* Support ------------------------------------------------------------- */
+  --mint: #e7f7f1;
+  --mint-tint: #fbfffd;
+  --mint-strong: #b9e6d5;
+  --green: #2d9475;
+  --green-deep: #17664e;
+  --lavender: #f0edff;
+  --lavender-strong: #eeecff;
+  --avatar: #ead1bb;
+
+  /* Status -------------------------------------------------------------- */
+  --danger: #b53b4a;
+  --danger-deep: #9d2d2d;
+  --danger-tint: #fff7f7;
+  --danger-line: #ead1d1;
+
+  /* Disabled ------------------------------------------------------------ */
+  /* Flat surface rather than a faded fill: a translucent navy primary reads
+     as an enabled purple button, which inverted the modal hierarchy. */
+  --disabled-bg: #f1f1f6;
+  --disabled-fg: #9394a6;
+  --disabled-line: #e2e2ec;
+
+  /* Radius scale -------------------------------------------------------- */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 24px;
+  --r-pill: 999px;
+
+  /* Type scale ---------------------------------------------------------- */
+  --t-3xs: 9px;
+  --t-2xs: 10px;
+  --t-xs: 11px;
+  --t-sm: 12px;
+  --t-base: 13px;
+  --t-md: 14px;
+  --t-lg: 15px;
+  --t-xl: 18px;
+  --t-2xl: 22px;
+  --t-3xl: 25px;
+
+  /* Focus --------------------------------------------------------------- */
+  --focus-ring: 0 0 0 3px rgba(255, 210, 63, .45);
+  --focus-edge: var(--ink);
+}
+
+* { box-sizing: border-box }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: #fff;
+  color: var(--ink);
+  font-family: Inter, "DM Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+button, input, textarea, select { font: inherit; color: inherit }
+button { cursor: pointer }
+input, textarea, select { width: 100% }
+body { overflow-x: hidden }
+
+/* Keyboard focus.
+   Previously only text inputs had any focus treatment, so every button and
+   link in the app was invisible to a keyboard user. :focus-visible keeps the
+   ring off mouse clicks. */
+:focus-visible {
+  outline: 2px solid var(--focus-edge);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: none;
+  border-color: var(--focus-edge);
+  box-shadow: var(--focus-ring);
+}
+
+/* Disabled controls read as unavailable rather than as a second style of
+   enabled button. Scoped to buttons that carry a surface — a flat grey fill on
+   a text-only button would invent a box that isn't there when it's enabled. */
+button:disabled { cursor: not-allowed }
+.primary-button:disabled,
+.outline-button:disabled,
+.approved-button:disabled,
+.toolbar-primary:disabled,
+.toolbar-secondary:disabled,
+.respondent-secondary:disabled,
+.context-draft-button:disabled,
+.setup-next:disabled {
+  background: var(--disabled-bg) !important;
+  color: var(--disabled-fg) !important;
+  border: 1px solid var(--disabled-line) !important;
+  box-shadow: none !important;
+  opacity: 1;
+}
+.primary-button:disabled svg,
+.outline-button:disabled svg,
+.toolbar-primary:disabled svg,
+.toolbar-secondary:disabled svg { opacity: .7 }
+
+/* Text and icon-only buttons simply recede. */
+.text-button:disabled,
+.finding-nav button:disabled,
+.danger-icon:disabled,
+.question-topline button:disabled { opacity: .38 }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media print {
+  .glean-sidebar, .glean-topbar, .report-outline, .report-actions, .glean-toast { display: none !important }
+  .glean-main { margin: 0 !important }
+  .report-stage { display: block !important }
+  .report-document { max-width: 760px !important; margin: auto !important; padding: 24px !important }
+}

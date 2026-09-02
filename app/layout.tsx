@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import "./miro.css";
+import "./glean.css";
 
 export const metadata: Metadata = {
   title: "Glean — Powered by Folde",
