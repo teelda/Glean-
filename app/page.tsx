@@ -20,6 +20,30 @@ type SessionUser = { id: string; email: string | null };
 /** Where the workspace study lived before accounts existed. */
 const LEGACY_STUDY_KEY = "glean-study-v1";
 
+/** The form builder's autosave slot. Home reads it to know whether to offer
+ *  "Create a form" or "Complete your form". */
+const FORM_DRAFT_KEY = "glean-form-draft-v1";
+
+type FormDraftSummary = { name: string; questions: number };
+
+/**
+ * A draft form exists only once it has questions — an empty shell saved by the
+ * builder is not something a person can meaningfully "complete", and offering
+ * to resume it would send them to a blank page.
+ */
+function readFormDraftSummary(): FormDraftSummary | null {
+  try {
+    const raw = window.localStorage.getItem(FORM_DRAFT_KEY);
+    if (!raw) return null;
+    const draft = JSON.parse(raw) as { formName?: string; sections?: FormSection[] };
+    const questions = (draft.sections ?? []).reduce((total, section) => total + (section.questions?.length ?? 0), 0);
+    if (!questions) return null;
+    return { name: draft.formName?.trim() || "Untitled research form", questions };
+  } catch {
+    return null;
+  }
+}
+
 /** Two letters from the email's local part, so the avatar is not a blank disc. */
 function initialsFor(email: string | null) {
   const local = (email ?? "").split("@")[0];
@@ -59,8 +83,13 @@ export default function GleanApp() {
   // collapses the rail to icons); true/false = the person overrode it.
   const [navOverride, setNavOverride] = useState<boolean | null>(null);
   const [prefs, setPrefs] = useState<Preferences>(DEFAULT_PREFERENCES);
+  const [formDraft, setFormDraft] = useState<FormDraftSummary | null>(null);
 
   useEffect(() => setPrefs(readPreferences()), []);
+
+  // Re-read on every area change: the builder autosaves as you leave it, so
+  // coming back to Home should already know there is a form to finish.
+  useEffect(() => setFormDraft(readFormDraftSummary()), [area]);
 
   const updatePrefs = useCallback((patch: Partial<Preferences>, message: string) => {
     setPrefs(current => {
@@ -285,6 +314,39 @@ export default function GleanApp() {
     notify("Findings are ready for review");
   };
 
+  // Renaming lived nowhere: a study created from Home was called "Untitled
+  // research study" for the rest of its life, including in the exported report.
+  const updateStudyDetails = (patch: Partial<Study>) => {
+    setStudy(current => ({ ...current, ...patch, updatedAt: "just now" }));
+  };
+
+  // The workspace is browser-local, so a backup file is the only way to move it
+  // between machines, hand it to a teammate, or survive clearing site data.
+  const exportWorkspace = () => {
+    downloadFile(
+      `glean-workspace-${slugify(study.title || "study")}.json`,
+      JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), study }, null, 2),
+      "application/json"
+    );
+    notify("Workspace backup downloaded");
+  };
+
+  const importWorkspace = async (file: File | null) => {
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text()) as { study?: Study } | Study;
+      const next = (parsed as { study?: Study }).study ?? (parsed as Study);
+      if (!next || !Array.isArray(next.interviews) || !Array.isArray(next.themes)) {
+        throw new Error("not a Glean workspace file");
+      }
+      setStudy({ ...next, updatedAt: "just now" });
+      setFindingIndex(0);
+      notify("Workspace restored");
+    } catch {
+      notify("That file is not a Glean workspace backup");
+    }
+  };
+
   const exportEvidence = () => {
     downloadFile("glean-evidence.csv", buildEvidenceCsv(study), "text/csv;charset=utf-8");
     setShowExport(false);
@@ -309,14 +371,18 @@ export default function GleanApp() {
         study={study}
         readiness={readiness}
         stage={stage}
+        user={user}
         onMenu={() => setMobileNav(true)}
         onArea={openArea}
         onStage={openStudy}
         onChat={() => setShowChat(true)}
+        onNew={() => startNewStudy("interviews")}
+        onSignOut={signOut}
+        onOpenFinding={index => { setFindingIndex(index); openStudy("findings"); }}
       />
 
-      {area === "home" && <HomeView study={study} approved={approved} readiness={readiness} onContinue={() => openStudy(study.interviews.length ? "findings" : "interviews")} onNew={() => startNewStudy("studies")} onForms={() => openArea("forms")} onInterviews={() => openStudy("interviews")} onChat={() => setShowChat(true)}/>} 
-      {area === "studies" && <StudiesView study={study} onOpen={() => openStudy(study.interviews.length ? "findings" : "interviews")} onNew={() => startNewStudy("interviews")} onForms={() => openArea("forms")}/>} 
+      {area === "home" && <HomeView study={study} approved={approved} readiness={readiness} hasWork={hasWork} formDraft={formDraft} onContinue={() => openStudy(study.interviews.length ? "findings" : "interviews")} onNew={() => startNewStudy("interviews")} onForms={() => openArea("forms")} onInterviews={() => openStudy("interviews")} onChat={() => setShowChat(true)}/>} 
+      {area === "studies" && <StudiesView study={study} formDraft={formDraft} onOpen={() => openStudy(study.interviews.length ? "findings" : "interviews")} onNew={() => startNewStudy("interviews")} onForms={() => openArea("forms")}/>} 
       {area === "forms" && <FormsView study={study} onOpenStudy={() => openStudy("interviews")} onCopied={() => notify("Form link copied")}/>} 
       {area === "study" && stage === "interviews" && <InterviewsStage study={study} onAdd={() => setShowAdd(true)} onAnalyse={analyse} onDropFiles={setDroppedFiles} onRemove={removeInterview}/>} 
       {area === "study" && stage === "findings" && <FindingsStage
@@ -332,13 +398,13 @@ export default function GleanApp() {
         onAnalyse={analyse}
       />} 
       {area === "help" && <HelpView onForms={() => openArea("forms")} onInterviews={() => openStudy("interviews")} onSettings={() => openArea("settings")}/>}
-      {area === "settings" && <SettingsView user={user} study={study} prefs={prefs} onUpdate={updatePrefs} onSignOut={signOut} onReset={() => startNewStudy("studies")} onExportCsv={exportEvidence} onExportWord={exportWord}/>}
+      {area === "settings" && <SettingsView user={user} study={study} prefs={prefs} onUpdate={updatePrefs} onSignOut={signOut} onReset={() => startNewStudy("interviews")} onExportCsv={exportEvidence} onExportWord={exportWord} onStudyChange={updateStudyDetails} onExportWorkspace={exportWorkspace} onImportWorkspace={importWorkspace}/>}
       {area === "study" && stage === "report" && <ReportStage study={study} onReview={() => setStage("findings")} onExport={() => setShowExport(value => !value)} exportOpen={showExport} onPdf={() => { window.print(); setShowExport(false); }} onWord={exportWord} onCsv={exportEvidence}/>} 
     </main>
 
     {evidence && <EvidenceDrawer evidence={evidence} study={study} onClose={() => setEvidence(null)}/>} 
     {(showAdd || droppedFiles) && <AddInterviewModal study={study} initialFiles={droppedFiles} onClose={() => { setShowAdd(false); setDroppedFiles(null); }} onAddMany={addInterviews}/>} 
-    {showChat && <ChatModal study={study} onClose={() => setShowChat(false)} onReview={() => { setShowChat(false); openStudy("findings"); }}/>} 
+    {showChat && <ChatModal study={study} area={area} stage={stage} formDraft={formDraft} onClose={() => setShowChat(false)} onReview={() => { setShowChat(false); openStudy("findings"); }} onGo={destination => { setShowChat(false); if (destination === "forms") openArea("forms"); else openStudy(destination); }}/>} 
     {confirmReset && <ConfirmDialog
       title="Start a new study?"
       body={`This replaces the current study. ${study.interviews.length} ${study.interviews.length === 1 ? "interview" : "interviews"} and ${study.themes.length} ${study.themes.length === 1 ? "finding" : "findings"} will be permanently removed from this workspace, including any approvals. Export your evidence first if you need to keep it.`}
@@ -346,7 +412,7 @@ export default function GleanApp() {
       onCancel={() => setConfirmReset(false)}
       onConfirm={() => commitNewStudy(pendingArea)}
     />}
-    {showWelcome && <Welcome onExplore={() => { window.localStorage.setItem("glean-onboarded", "true"); setShowWelcome(false); }} onCreate={() => { window.localStorage.setItem("glean-onboarded", "true"); setStudy(emptyStudy()); setShowWelcome(false); openArea("studies"); }}/>} 
+    {showWelcome && <Welcome onExplore={() => { window.localStorage.setItem("glean-onboarded", "true"); setShowWelcome(false); }} onCreate={() => { window.localStorage.setItem("glean-onboarded", "true"); setStudy(emptyStudy()); setShowWelcome(false); openStudy("interviews"); }}/>} 
     {toast && <div className="glean-toast" role="status"><Check size={16}/>{toast}</div>}
   </div>;
 }
@@ -413,7 +479,7 @@ const STAGE_LABEL: Record<Stage, string> = { interviews: "Interviews", findings:
  * inside a study you are three levels deep, and the trail is the only thing
  * that says so and lets you climb back out.
  */
-function Topbar({ area, study, readiness, stage, onMenu, onArea, onStage, onChat }: { area: Area; study: Study; readiness: number; stage: Stage; onMenu: () => void; onArea: (area: Area) => void; onStage: (stage: Stage) => void; onChat: () => void }) {
+function Topbar({ area, study, readiness, stage, user, onMenu, onArea, onStage, onChat, onNew, onSignOut, onOpenFinding }: { area: Area; study: Study; readiness: number; stage: Stage; user: SessionUser | null; onMenu: () => void; onArea: (area: Area) => void; onStage: (stage: Stage) => void; onChat: () => void; onNew: () => void; onSignOut: () => void; onOpenFinding: (index: number) => void }) {
   const trail = area === "home" ? [{ label: "Home" }]
     : area === "studies" ? [{ label: "Studies" }]
     : area === "forms" ? [{ label: "Forms" }]
@@ -421,7 +487,9 @@ function Topbar({ area, study, readiness, stage, onMenu, onArea, onStage, onChat
     : area === "settings" ? [{ label: "Settings" }]
     : [{ label: "Studies", go: () => onArea("studies") }, { label: study.title, go: () => onStage(stage) }, { label: STAGE_LABEL[stage] }];
 
-  return <header className="glean-topbar">
+  // Inside a study the bar already carries readiness and "Open report", so the
+  // create action drops its label rather than pushing the breadcrumb off-screen.
+  return <header className={`glean-topbar ${area === "study" ? "in-study" : ""}`}>
     <div className="topbar-title">
       <button className="mobile-menu" aria-label="Open navigation" onClick={onMenu}><Menu size={20}/></button>
       <nav className="topbar-crumbs" aria-label="Breadcrumb">
@@ -436,21 +504,164 @@ function Topbar({ area, study, readiness, stage, onMenu, onArea, onStage, onChat
         <div className="report-readiness"><span>Report readiness</span><i/><b>{readiness >= 75 ? "Good" : readiness ? "In progress" : "Not started"}</b><div><span style={{ width: `${readiness}%` }}/></div><em>{readiness}%</em></div>
         {stage !== "report" && <button className="outline-button" onClick={() => onStage("report")}><FileText size={17}/>Open report</button>}
       </>}
+      <GlobalSearch study={study} onArea={onArea} onStage={onStage} onOpenFinding={onOpenFinding}/>
       <button className="topbar-chat" onClick={onChat} title="Ask Glean"><Bot size={17}/><span>Ask Glean</span></button>
+      <button className="topbar-new primary-button" onClick={onNew} title="Start a new study"><Plus size={17}/><span>New study</span></button>
+      <TopbarAccount user={user} onSignOut={onSignOut} onSettings={() => onArea("settings")} onHelp={() => onArea("help")}/>
     </div>
   </header>;
 }
 
+type SearchHit = { id: string; kind: string; label: string; meta: string; go: () => void };
+
+/**
+ * The bar could name where you were but never take you anywhere you had not
+ * already navigated to. Findings are the thing people hunt for by phrase — a
+ * quote half-remembered from a transcript — and the sidebar has no way to reach
+ * one directly, so search resolves to a finding, an interview, or an area.
+ */
+function GlobalSearch({ study, onArea, onStage, onOpenFinding }: { study: Study; onArea: (area: Area) => void; onStage: (stage: Stage) => void; onOpenFinding: (index: number) => void }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Cmd/Ctrl-K is the shortcut people already try in tools shaped like this.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setOpen(true);
+        inputRef.current?.focus();
+      }
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", onClick);
+    return () => window.removeEventListener("mousedown", onClick);
+  }, []);
+
+  const term = query.trim().toLowerCase();
+  const hits: SearchHit[] = [];
+  if (term) {
+    if (`${study.title} ${study.goal}`.toLowerCase().includes(term)) {
+      hits.push({ id: "study", kind: "Study", label: study.title, meta: `${study.interviews.length} interviews · ${study.themes.length} findings`, go: () => onStage(study.interviews.length ? "findings" : "interviews") });
+    }
+    study.themes.forEach((theme, index) => {
+      const haystack = `${theme.title} ${theme.summary} ${theme.tags.join(" ")} ${theme.evidence.map(item => item.quote).join(" ")}`.toLowerCase();
+      if (haystack.includes(term)) {
+        hits.push({ id: `theme-${theme.id}`, kind: "Finding", label: theme.title, meta: `${theme.strength} · ${theme.participantCount} participants`, go: () => onOpenFinding(index) });
+      }
+    });
+    study.interviews.forEach(interview => {
+      const haystack = `${interview.participant.code} ${interview.participant.role} ${interview.transcript}`.toLowerCase();
+      if (haystack.includes(term)) {
+        hits.push({ id: `interview-${interview.id}`, kind: "Interview", label: interview.participant.code, meta: interview.participant.role, go: () => onStage("interviews") });
+      }
+    });
+    ([
+      { label: "Forms", meta: "Build and publish a research form", go: () => onArea("forms") },
+      { label: "Report", meta: "Approved findings, ready to export", go: () => onStage("report") },
+      { label: "Settings", meta: "Workspace preferences and data", go: () => onArea("settings") },
+      { label: "Help", meta: "How Glean works", go: () => onArea("help") }
+    ]).forEach(place => {
+      if (place.label.toLowerCase().includes(term) || place.meta.toLowerCase().includes(term)) {
+        hits.push({ id: `area-${place.label}`, kind: "Go to", label: place.label, meta: place.meta, go: place.go });
+      }
+    });
+  }
+  const shown = hits.slice(0, 6);
+
+  const choose = (hit: SearchHit) => {
+    hit.go();
+    setQuery("");
+    setOpen(false);
+  };
+
+  return <div className={`topbar-search ${open ? "open" : ""}`} ref={boxRef}>
+    <label className="search-field compact">
+      <Search size={16}/>
+      <input
+        ref={inputRef}
+        value={query}
+        onFocus={() => setOpen(true)}
+        onChange={event => { setQuery(event.target.value); setOpen(true); }}
+        onKeyDown={event => { if (event.key === "Enter" && shown[0]) choose(shown[0]); }}
+        placeholder="Search findings, interviews…"
+        aria-label="Search this workspace"
+      />
+      <kbd aria-hidden="true">⌘K</kbd>
+    </label>
+    {open && term.length > 0 && <div className="search-results" role="listbox">
+      {shown.length === 0
+        ? <p className="search-empty">Nothing in this workspace matches “{query.trim()}”.</p>
+        : shown.map(hit => <button key={hit.id} type="button" role="option" aria-selected="false" onClick={() => choose(hit)}>
+            <em>{hit.kind}</em>
+            <span><b>{hit.label}</b><small>{hit.meta}</small></span>
+            <ChevronRight size={15}/>
+          </button>)}
+    </div>}
+  </div>;
+}
+
+/**
+ * Who you are was only ever shown in the sidebar, which collapses to icons in
+ * Forms — the screen people spend longest on. The bar carries it now, with the
+ * two destinations the collapsed rail also hides.
+ */
+function TopbarAccount({ user, onSignOut, onSettings, onHelp }: { user: SessionUser | null; onSignOut: () => void; onSettings: () => void; onHelp: () => void }) {
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", onClick);
+    return () => window.removeEventListener("mousedown", onClick);
+  }, []);
+
+  return <div className="topbar-account" ref={boxRef}>
+    <button
+      type="button"
+      onClick={() => setOpen(value => !value)}
+      aria-haspopup="menu"
+      aria-expanded={open}
+      title={user?.email ?? "Account"}
+    >{initialsFor(user?.email ?? null)}</button>
+    {open && <div className="account-menu" role="menu">
+      <div className="account-menu-head"><b>{user?.email ?? "Not signed in"}</b><small>{user ? "Solo researcher workspace" : "Sign in to keep your study"}</small></div>
+      <button role="menuitem" onClick={() => { setOpen(false); onSettings(); }}><Settings size={15}/>Settings</button>
+      <button role="menuitem" onClick={() => { setOpen(false); onHelp(); }}><CircleHelp size={15}/>Help</button>
+      <button role="menuitem" onClick={onSignOut}><LogOut size={15}/>{user ? "Sign out" : "Sign in"}</button>
+    </div>}
+  </div>;
+}
+
 const RESEARCH_PATHS = [
-  { id: "form", tone: "lilac", icon: ClipboardList, title: "Create a form", body: "Draft a screener, consent and questions from your research goal — or from a plan you already wrote." },
-  { id: "interviews", tone: "teal", icon: MessageSquareText, title: "Analyse interviews", body: "Upload transcripts and review themes that stay tied to the exact words participants used." },
-  { id: "doc", tone: "coral", icon: FileText, title: "Import a research doc", body: "Pull questions out of a DOCX, PDF or TXT and turn them into an editable form draft." }
+  { id: "form", tone: "lilac", icon: ClipboardList, title: "Create a form", body: "Draft a screener, consent and questions from your research goal — or from a plan you already wrote.", go: "Start" },
+  { id: "interviews", tone: "teal", icon: MessageSquareText, title: "Analyse interviews", body: "Upload transcripts and review themes that stay tied to the exact words participants used.", go: "Start" },
+  { id: "doc", tone: "coral", icon: FileText, title: "Import a research doc", body: "Pull questions out of a DOCX, PDF or TXT and turn them into an editable form draft.", go: "Start" }
 ] as const;
 
-function HomeView({ study, approved, readiness, onContinue, onNew, onForms, onInterviews, onChat }: { study: Study; approved: number; readiness: number; onContinue: () => void; onNew: () => void; onForms: () => void; onInterviews: () => void; onChat: () => void }) {
+function HomeView({ study, approved, readiness, hasWork, formDraft, onContinue, onNew, onForms, onInterviews, onChat }: { study: Study; approved: number; readiness: number; hasWork: boolean; formDraft: FormDraftSummary | null; onContinue: () => void; onNew: () => void; onForms: () => void; onInterviews: () => void; onChat: () => void }) {
   const draftFindings = study.themes.length - approved;
   const topFinding = study.themes.find(theme => theme.status === "approved") ?? study.themes[0];
   const openPath = (id: string) => id === "interviews" ? onInterviews() : onForms();
+
+  // An unfinished form is the same door, relabelled. Offering "Create a form"
+  // next to a half-written one reads as a second form rather than the way back
+  // into the one already started.
+  const paths = RESEARCH_PATHS.map(path => path.id === "form" && formDraft
+    ? { ...path, title: "Complete your form", body: `${formDraft.name} has ${formDraft.questions} ${formDraft.questions === 1 ? "question" : "questions"} saved. Pick up where you stopped, then publish it.`, go: "Continue" }
+    : path);
 
   return <section className="home-view page-pad">
     <div className="home-opener">
@@ -460,7 +671,7 @@ function HomeView({ study, approved, readiness, onContinue, onNew, onForms, onIn
         <p className="home-lede">Move from interviews, forms and research documents to reviewed findings, exact quotes, and a report people can trust.</p>
         <div className="home-actions">
           <button className="primary-button" onClick={onNew}>Start a new study<ArrowRight size={17}/></button>
-          <button className="outline-button" onClick={onContinue}>Continue where you left off</button>
+          {hasWork && <button className="outline-button" onClick={onContinue}>Continue the study you left</button>}
         </div>
         <button className="hero-chat" onClick={onChat}>
           <span className="hero-chat-mark"><Bot size={17}/></span>
@@ -489,13 +700,13 @@ function HomeView({ study, approved, readiness, onContinue, onNew, onForms, onIn
     <section className="home-paths" aria-label="Start research">
       <h2 className="section-title">Where do you want to start?</h2>
       <div className="path-grid">
-        {RESEARCH_PATHS.map(path => {
+        {paths.map(path => {
           const Icon = path.icon;
           return <button key={path.id} className={`path-card tone-${path.tone}`} onClick={() => openPath(path.id)}>
             <span className="path-icon"><Icon size={22}/></span>
             <b>{path.title}</b>
             <p>{path.body}</p>
-            <span className="path-go">Start<ArrowRight size={16}/></span>
+            <span className="path-go">{path.go}<ArrowRight size={16}/></span>
           </button>;
         })}
       </div>
@@ -538,13 +749,13 @@ function HomeView({ study, approved, readiness, onContinue, onNew, onForms, onIn
 }
 
 
-function StudiesView({ study, onOpen, onNew, onForms }: { study: Study; onOpen: () => void; onNew: () => void; onForms: () => void }) {
+function StudiesView({ study, formDraft, onOpen, onNew, onForms }: { study: Study; formDraft: FormDraftSummary | null; onOpen: () => void; onNew: () => void; onForms: () => void }) {
   const [query, setQuery] = useState("");
   const matches = study.title.toLowerCase().includes(query.toLowerCase()) || study.goal.toLowerCase().includes(query.toLowerCase());
   return <section className="studies-view page-pad">
     <div className="research-header">
       <div><span className="eyebrow">RESEARCH</span><h1>Your research workspace.</h1><p>Plan studies, collect interviews, create forms, and move reviewed findings into reports from one place.</p></div>
-      <div className="research-actions"><button className="outline-button" onClick={onForms}><ClipboardList size={17}/>Create form</button><button className="primary-button" onClick={onNew}><Plus size={17}/>New study</button></div>
+      <div className="research-actions"><button className="outline-button" onClick={onForms}><ClipboardList size={17}/>{formDraft ? "Complete form" : "Create form"}</button><button className="primary-button" onClick={onNew}><Plus size={17}/>New study</button></div>
     </div>
     <div className="research-grid">
       <section className="research-main">
@@ -557,7 +768,9 @@ function StudiesView({ study, onOpen, onNew, onForms }: { study: Study; onOpen: 
         </button> : <div className="empty-search"><Search size={26}/><h3>No studies found</h3><p>Try a different title or research goal.</p></div>}
       </section>
       <aside className="research-side">
-        <section><span className="eyebrow">NEXT BEST ACTION</span><h2>Generate a research form</h2><p>Give Glean the goal, audience, and decision. It drafts the screener, consent, and questions so you are editing structure instead of building from zero.</p><button className="primary-button" onClick={onForms}><Sparkles size={17}/>Start with context</button></section>
+        <section><span className="eyebrow">NEXT BEST ACTION</span>{formDraft
+          ? <><h2>Finish {formDraft.name}</h2><p>{formDraft.questions} {formDraft.questions === 1 ? "question" : "questions"} are saved in the builder. Review the wording, then publish to get a respondent link.</p><button className="primary-button" onClick={onForms}><ClipboardList size={17}/>Complete form</button></>
+          : <><h2>Generate a research form</h2><p>Give Glean the goal, audience, and decision. It drafts the screener, consent, and questions so you are editing structure instead of building from zero.</p><button className="primary-button" onClick={onForms}><Sparkles size={17}/>Start with context</button></>}</section>
         <section><span className="eyebrow">WORKFLOW</span><ol className="research-flow">{["Brief", "Form", "Responses", "Findings"].map((step, index, all) =>
           <li key={step}>{index > 0 && <ChevronRight size={14} aria-hidden="true"/>}<span>{step}</span></li>)}</ol></section>
       </aside>
@@ -1568,6 +1781,8 @@ function inferRole(text: string) {
 
 
 
+type ChatDestination = "interviews" | "findings" | "report" | "forms";
+
 type ChatTurn = {
   id: string;
   role: "user" | "assistant";
@@ -1575,21 +1790,98 @@ type ChatTurn = {
   citations?: Evidence[];
   /** An answer the study could not support — rendered as a refusal, not a claim. */
   unsupported?: boolean;
+  /** Somewhere the answer points at, offered as a button under the reply. */
+  action?: { label: string; to: ChatDestination };
 };
 
+/** Where the person is, so chat can answer "what next" from the same facts. */
+type ChatContext = { area: Area; stage: Stage; formDraft: FormDraftSummary | null };
+
+const CHAT_PLACE: Record<string, string> = {
+  home: "Home",
+  studies: "Studies",
+  forms: "Form builder",
+  help: "Help",
+  settings: "Settings",
+  interviews: "Add interviews",
+  findings: "Review findings",
+  report: "Present report"
+};
+
+const chatPlaceLabel = (context: ChatContext) =>
+  CHAT_PLACE[context.area === "study" ? context.stage : context.area] ?? "Glean";
+
 /**
- * Two prompts answer from the shape of the evidence and so always work; the
- * third is drawn from the study itself. Hardcoding a topic here means shipping
- * a suggestion that gets refused whenever the loaded study is about something
- * else — this sample study, for one, never mentions pricing.
+ * The single next thing worth doing, derived from the study rather than a
+ * fixed script — the same computation the answer and the quick-jump row share,
+ * so they cannot disagree.
  */
-function chatSuggestions(study: Study) {
+function nextStep(study: Study, context: ChatContext): { text: string; action: { label: string; to: ChatDestination } } {
+  if (!study.interviews.length) {
+    return {
+      text: "This study has no interviews yet, so there is nothing for me to answer from. Add five to twenty transcripts and run analysis — findings only exist once there are participant words behind them.",
+      action: { label: "Add interviews", to: "interviews" }
+    };
+  }
+  if (!study.themes.length) {
+    return {
+      text: `You have ${study.interviews.length} ${study.interviews.length === 1 ? "interview" : "interviews"} loaded but no findings yet. Run analysis and I will be able to answer from the themes it produces.`,
+      action: { label: "Run analysis", to: "interviews" }
+    };
+  }
+  const unreviewed = study.themes.filter(theme => theme.status === "draft").length;
+  if (unreviewed) {
+    return {
+      text: `${unreviewed} of ${study.themes.length} findings are still unreviewed. Open each one, read the quotes underneath it, and approve only the claims the evidence actually supports — the report is built from approvals.`,
+      action: { label: "Review findings", to: "findings" }
+    };
+  }
+  const approved = study.themes.filter(theme => theme.status === "approved").length;
+  if (!approved) {
+    return {
+      text: "Every finding has been reviewed and none were approved, so the report would be empty. Re-run analysis on more interviews, or revisit the findings you rejected.",
+      action: { label: "Back to findings", to: "findings" }
+    };
+  }
+  if (context.formDraft) {
+    return {
+      text: `All ${study.themes.length} findings are reviewed and ${approved} are approved, so the report is ready to draft. You also have an unfinished form — ${context.formDraft.name}, ${context.formDraft.questions} ${context.formDraft.questions === 1 ? "question" : "questions"} saved.`,
+      action: { label: "Open report", to: "report" }
+    };
+  }
+  return {
+    text: `All ${study.themes.length} findings are reviewed and ${approved} ${approved === 1 ? "is" : "are"} approved. The report will carry those approvals, their quotes and participant codes — raw transcripts stay in this workspace.`,
+    action: { label: "Open report", to: "report" }
+  };
+}
+
+/**
+ * Suggestions are drawn from the study and from the screen the chat was opened
+ * over. A fixed list ships prompts that get refused — the sample study never
+ * mentions pricing — and prompts that are irrelevant to where you are standing:
+ * "which findings are strongest" is not the question on your mind while you are
+ * still uploading transcripts.
+ */
+function chatSuggestions(study: Study, context: ChatContext) {
   const topic = study.themes[0]?.title;
-  return [
-    "What should we change in onboarding?",
-    "Which problems have the strongest support?",
-    ...(topic ? [`What did people say about ${topic.toLowerCase()}?`] : [])
-  ];
+  const here = context.area === "study" ? context.stage : context.area;
+
+  if (!study.interviews.length) {
+    return ["What should I do first?", "What makes a good interview transcript?", "How many interviews do I need?"];
+  }
+  if (!study.themes.length) {
+    return ["What should I do next?", "What does analysis actually produce?", "Why does every finding need a quote?"];
+  }
+
+  const base = here === "interviews"
+    ? ["What should I do next?", "Which participants disagree with each other?"]
+    : here === "report"
+      ? ["What goes into the exported report?", "Which findings have the strongest support?"]
+      : here === "forms"
+        ? ["What should I do next?", "What did people say that this form should follow up on?"]
+        : ["What should I do next?", "Which problems have the strongest support?"];
+
+  return [...base, ...(topic ? [`What did people say about ${topic.toLowerCase()}?`] : [])];
 }
 
 /** Words that carry no signal when matching a question against a finding. */
@@ -1605,7 +1897,9 @@ const STRENGTH_RANK: Record<Strength, number> = { dominant: 3, recurring: 2, eme
 /** "Which problems have the strongest support?" is a ranking, not a keyword lookup. */
 const RANKING_INTENT = /\b(strongest|weakest|most|least|rank|confident|confidence|support|supported|evidence|recurring|dominant|common)\b/;
 /** "What should we change?" wants the reviewed findings, framed as actions. */
-const ACTION_INTENT = /\b(change|improve|fix|next|recommend|priorit|action)\b/;
+const ACTION_INTENT = /\b(change|improve|fix|recommend|priorit|action)\b/;
+/** "What now?" is about the workspace, not the evidence — it is answered from state. */
+const NEXT_INTENT = /\b(next|first|now|start|stuck|where am i|what do i do|todo|to do)\b/;
 
 /**
  * Answers are assembled from the study, never invented. A question that does
@@ -1616,17 +1910,31 @@ const ACTION_INTENT = /\b(change|improve|fix|next|recommend|priorit|action)\b/;
  * shape of the evidence rather than its wording and literal matching refuses
  * them even when the study can answer.
  */
-function answerFromStudy(question: string, study: Study): ChatTurn {
+function answerFromStudy(question: string, study: Study, context: ChatContext): ChatTurn {
   const id = `a-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const asked = question.toLowerCase();
   const terms = asked.split(/[^a-z0-9]+/).filter(word => word.length > 2 && !CHAT_STOPWORDS.has(word));
 
+  // Asked before the evidence check: "what should I do next" is answerable in
+  // an empty workspace, and it is the question an empty workspace provokes.
+  if (NEXT_INTENT.test(asked)) {
+    const step = nextStep(study, context);
+    return {
+      id,
+      role: "assistant",
+      text: `You are on **${chatPlaceLabel(context)}**.\n\n${step.text}`,
+      action: step.action
+    };
+  }
+
   if (!study.themes.length) {
+    const step = nextStep(study, context);
     return {
       id,
       role: "assistant",
       unsupported: true,
-      text: "There are no reviewed findings in this study yet. Add interviews and run analysis, and I will only answer from what participants actually said."
+      text: "There are no reviewed findings in this study yet, so I have nothing to answer from — I will not fill the gap with a guess.\n\n" + step.text,
+      action: step.action
     };
   }
 
@@ -1685,7 +1993,8 @@ function answerFromStudy(question: string, study: Study): ChatTurn {
   };
 }
 
-function ChatModal({ study, onClose, onReview }: { study: Study; onClose: () => void; onReview: () => void }) {
+function ChatModal({ study, area, stage, formDraft, onClose, onReview, onGo }: { study: Study; area: Area; stage: Stage; formDraft: FormDraftSummary | null; onClose: () => void; onReview: () => void; onGo: (to: ChatDestination) => void }) {
+  const context: ChatContext = { area, stage, formDraft };
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [draft, setDraft] = useState("");
   const [thinking, setThinking] = useState(false);
@@ -1713,12 +2022,14 @@ function ChatModal({ study, onClose, onReview }: { study: Study; onClose: () => 
     composerRef.current?.focus();
     // A short pause so the answer reads as a response rather than a lookup.
     replyTimer.current = window.setTimeout(() => {
-      setTurns(current => [...current, answerFromStudy(text, study)]);
+      setTurns(current => [...current, answerFromStudy(text, study, context)]);
       setThinking(false);
     }, 550);
   };
 
-  return <Dialog className="chat-modal" eyebrow="STUDY CHAT" title="Ask Glean" onClose={onClose} footer={
+  const step = nextStep(study, context);
+
+  return <Dialog className="chat-modal" eyebrow={`STUDY CHAT · ${chatPlaceLabel(context).toUpperCase()}`} title="Ask Glean" onClose={onClose} footer={
     <form className="chat-input" onSubmit={event => { event.preventDefault(); ask(draft); }}>
       <input
         ref={composerRef}
@@ -1735,8 +2046,12 @@ function ChatModal({ study, onClose, onReview }: { study: Study; onClose: () => 
         <span className="chat-mark"><Bot size={22}/></span>
         <b>Ask anything about {study.title}</b>
         <p>Answers are drawn only from your {study.interviews.length} {study.interviews.length === 1 ? "interview" : "interviews"} and {study.themes.length} {study.themes.length === 1 ? "finding" : "findings"}, and cite the quotes behind them.</p>
+        <div className="chat-next">
+          <span><b>Next step</b><small>{step.text}</small></span>
+          <button type="button" className="outline-button" onClick={() => onGo(step.action.to)}>{step.action.label}<ArrowRight size={15}/></button>
+        </div>
         <div className="chat-suggestions">
-          {chatSuggestions(study).map(suggestion => <button key={suggestion} type="button" onClick={() => ask(suggestion)}>{suggestion}</button>)}
+          {chatSuggestions(study, context).map(suggestion => <button key={suggestion} type="button" onClick={() => ask(suggestion)}>{suggestion}</button>)}
         </div>
       </div>}
 
@@ -1745,6 +2060,7 @@ function ChatModal({ study, onClose, onReview }: { study: Study; onClose: () => 
         : <div key={turn.id} className={`chat-message assistant ${turn.unsupported ? "unsupported" : ""}`}>
             {turn.unsupported && <b><LockKeyhole size={14}/>Not supported by this study</b>}
             {turn.text.split("\n\n").map((paragraph, index) => <p key={index}>{renderChatText(paragraph)}</p>)}
+            {turn.action && <button type="button" className="chat-action" onClick={() => onGo(turn.action!.to)}>{turn.action.label}<ArrowRight size={15}/></button>}
             {turn.citations && turn.citations.length > 0 && <div className="chat-citations">
               {turn.citations.map(citation => <button key={citation.id} type="button" className="citation-chip" onClick={onReview} title={citation.quote}>
                 <Quote size={14}/>{citation.participantCode} · {citation.segmentId}
@@ -1753,6 +2069,14 @@ function ChatModal({ study, onClose, onReview }: { study: Study; onClose: () => 
           </div>)}
 
       {thinking && <div className="chat-message assistant thinking" aria-live="polite"><span/><span/><span/></div>}
+
+      {turns.length > 0 && <div className="chat-jump">
+        <span>Jump to</span>
+        <button type="button" onClick={() => onGo("interviews")}>Interviews</button>
+        <button type="button" onClick={() => onGo("findings")}>Findings</button>
+        <button type="button" onClick={() => onGo("report")}>Report</button>
+        <button type="button" onClick={() => onGo("forms")}>{formDraft ? "Complete form" : "Forms"}</button>
+      </div>}
 
       {turns.length > 0 && <div className="chat-limits"><LockKeyhole size={16}/><span><b>Prototype retrieval.</b><small>Answers are matched against your findings on this device. Production chat still needs real retrieval, answer validation, and refusal review.</small></span></div>}
     </div>
@@ -1780,10 +2104,12 @@ function readPreferences(): Preferences {
   }
 }
 
-function SettingsView({ user, study, prefs, onUpdate, onSignOut, onReset, onExportCsv, onExportWord }: {
+function SettingsView({ user, study, prefs, onUpdate, onSignOut, onReset, onExportCsv, onExportWord, onStudyChange, onExportWorkspace, onImportWorkspace }: {
   user: SessionUser | null; study: Study; prefs: Preferences;
   onUpdate: (patch: Partial<Preferences>, message: string) => void;
   onSignOut: () => void; onReset: () => void; onExportCsv: () => void; onExportWord: () => void;
+  onStudyChange: (patch: Partial<Study>) => void;
+  onExportWorkspace: () => void; onImportWorkspace: (file: File | null) => void;
 }) {
   // Saved on change rather than behind a Save button: there is nothing here a
   // person would want to fill in and then discard.
@@ -1812,6 +2138,13 @@ function SettingsView({ user, study, prefs, onUpdate, onSignOut, onReset, onExpo
         </section>
 
         <section className="settings-card">
+          <div className="settings-card-head"><span className="eyebrow">STUDY</span><h2>Name and goal</h2></div>
+          <p className="settings-note">These carry into the sidebar, the breadcrumb and the exported report, so a study called &ldquo;Untitled&rdquo; ships that way.</p>
+          <label className="settings-field">Study title<input value={study.title} onChange={event => onStudyChange({ title: event.target.value })} placeholder="e.g. Pricing onboarding research"/></label>
+          <label className="settings-field">Research goal<textarea rows={3} value={study.goal} onChange={event => onStudyChange({ goal: event.target.value })} placeholder="What decision should this research inform?"/></label>
+        </section>
+
+        <section className="settings-card">
           <div className="settings-card-head"><span className="eyebrow">ANALYSIS</span><h2>How findings are produced</h2></div>
           <label className="switch-row">
             <span><b>Redact personal details</b><small>Analyse a copy with names, emails and phone numbers masked. The original transcript is untouched.</small></span>
@@ -1829,6 +2162,23 @@ function SettingsView({ user, study, prefs, onUpdate, onSignOut, onReset, onExpo
             <span><b>Collapse the sidebar in Forms</b><small>The form builder is the widest screen in Glean, so the navigation drops to icons when you open it. You can always toggle it by hand.</small></span>
             <input type="checkbox" checked={prefs.autoCollapseNav} onChange={event => update({ autoCollapseNav: event.target.checked }, event.target.checked ? "Sidebar will collapse in Forms" : "Sidebar will stay open")}/>
           </label>
+        </section>
+
+        <section className="settings-card">
+          <div className="settings-card-head"><span className="eyebrow">BACKUP</span><h2>Move this workspace</h2></div>
+          <p className="settings-note">Your study lives in this browser only. A backup file is how you move it to another machine, hand it to a teammate, or get it back after clearing site data. Restoring replaces everything currently in the workspace.</p>
+          <div className="settings-actions">
+            <button className="outline-button" onClick={onExportWorkspace}><Download size={15}/>Download backup</button>
+            <label className="outline-button file-button"><Upload size={15}/>Restore from file<input type="file" accept="application/json,.json" onChange={event => { onImportWorkspace(event.currentTarget.files?.[0] ?? null); event.currentTarget.value = ""; }}/></label>
+          </div>
+        </section>
+
+        <section className="settings-card">
+          <div className="settings-card-head"><span className="eyebrow">SHORTCUTS</span><h2>Keyboard</h2></div>
+          <dl className="shortcut-list">
+            <div><dt><kbd>⌘</kbd><kbd>K</kbd></dt><dd>Search findings, interviews and areas from the top bar</dd></div>
+            <div><dt><kbd>Esc</kbd></dt><dd>Close search, a dialog, or the evidence drawer</dd></div>
+          </dl>
         </section>
 
         <section className="settings-card danger-card">

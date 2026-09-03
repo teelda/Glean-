@@ -333,8 +333,21 @@
 .topbar-actions {
   display:flex;
   align-items:center;
-  gap:var(--s-5);
+  gap:var(--s-3);
+  flex:0 0 auto;
 }
+
+/* The title yields first. Without this the actions row — readiness, report,
+   search, chat, create, account — pushed the breadcrumb left, under the fixed
+   rail, where it was still visible but no longer clickable. */
+.topbar-title { flex:1 1 auto; overflow:hidden }
+.topbar-crumbs { overflow:hidden }
+/* Only the study title gives way. When every crumb shrank equally, "Studies"
+   collapsed narrower than its own label and the next crumb's chevron sat over
+   the middle of it — visible, and impossible to click. */
+.topbar-crumbs > span { flex:none }
+.topbar-crumbs > span:nth-child(2) { flex:0 1 auto; min-width:8ch }
+.topbar-crumbs > span:nth-child(2) button { max-width:none }
 
 .topbar-chat {
   display:flex;
@@ -3133,7 +3146,7 @@
    only — Forms and Reports stay neutral so data and long-form text lead.
    =========================================================================== */
 
-.home-view { display: grid; gap: var(--s-16) }
+.home-view { display: grid; gap: var(--s-12) }
 
 /* --- opener --------------------------------------------------------------- */
 .home-opener {
@@ -3144,7 +3157,7 @@
 }
 .home-intro { max-width: 640px }
 .home-intro h1 {
-  margin: var(--s-4) 0 var(--s-5);
+  margin: var(--s-3) 0 var(--s-4);
   font-size: var(--t-display);
   font-weight: 500;
   line-height: var(--lh-display);
@@ -3154,7 +3167,7 @@
    type selector and was otherwise zeroing this margin and pulling the lede
    down to body size. */
 .home-view .home-lede {
-  margin: 0 0 var(--s-10);
+  margin: 0 0 var(--s-8);
   max-width: 560px;
   font-size: var(--t-h4);
   line-height: 1.5;
@@ -3213,7 +3226,7 @@
 
 /* --- research paths (the pastel row) -------------------------------------- */
 .section-title {
-  margin: 0 0 var(--s-6);
+  margin: 0 0 var(--s-5);
   font-size: var(--t-h2);
   font-weight: 500;
   line-height: var(--lh-heading);
@@ -3328,7 +3341,7 @@
   .path-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) }
 }
 @media (max-width: 760px) {
-  .home-view { gap: var(--s-16) }
+  .home-view { gap: var(--s-10) }
   .home-intro h1 { font-size: 36px; letter-spacing: -.8px }
   .home-view .home-lede { font-size: var(--t-body) }
   .home-actions .primary-button, .home-actions .outline-button { flex: 1 1 100%; }
@@ -4417,7 +4430,7 @@
 .home-view .home-opener {
   position: relative;
   isolation: isolate;
-  padding: var(--s-12) var(--s-10);
+  padding: var(--s-10);
   border: 1px solid var(--line);
   border-radius: var(--r-3xl);
   background:
@@ -4493,7 +4506,7 @@
 }
 
 @media (max-width: 1100px) {
-  .home-view .home-opener { padding: var(--s-10) var(--s-8) }
+  .home-view .home-opener { padding: var(--s-8) }
 }
 @media (max-width: 760px) {
   .home-view .home-opener {
@@ -4706,4 +4719,276 @@
 @media (prefers-reduced-motion: reduce) {
   .switch-row input[type="checkbox"],
   .switch-row input[type="checkbox"]::after { transition: none }
+}
+
+/* ===========================================================================
+   TOP BAR — search, new study, account
+   The bar named where you were and offered one action. Three things were
+   missing and each has a home nowhere else: a way to reach a finding by the
+   words in it, the create action the whole product is for, and the identity
+   the sidebar hides whenever it collapses to icons in Forms.
+   =========================================================================== */
+.topbar-search { position: relative }
+.topbar-search .search-field.compact {
+  width: 260px;
+  height: var(--tap);
+  border-radius: var(--r-pill);
+  background: var(--soft);
+  border-color: transparent;
+  transition: border-color .15s ease, background .15s ease, width .15s ease;
+}
+.topbar-search .search-field.compact:focus-within {
+  background: #fff;
+  border-color: var(--line-strong);
+  box-shadow: var(--e-1);
+}
+.topbar-search .search-field input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  color: var(--ink);
+}
+.topbar-search kbd {
+  flex: none;
+  font: inherit;
+  font-size: var(--t-micro);
+  color: var(--muted);
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: #fff;
+}
+.topbar-search .search-field.compact:focus-within kbd { display: none }
+
+.search-results {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  min-width: 320px;
+  padding: var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: #fff;
+  box-shadow: var(--e-3);
+  z-index: 40;
+  display: grid;
+  gap: 2px;
+}
+.search-results button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 10px var(--s-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: var(--ink);
+}
+.search-results button:hover, .search-results button:focus-visible { background: var(--soft) }
+.search-results em {
+  font-style: normal;
+  font-size: var(--t-micro);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.search-results span { display: grid; gap: 1px; min-width: 0 }
+.search-results b { font-size: var(--t-sm); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.search-results small { font-size: var(--t-label); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.search-results svg { color: var(--stone) }
+.search-empty { margin: 0; padding: var(--s-4) var(--s-3); font-size: var(--t-sm); color: var(--muted) }
+
+.topbar-new { white-space: nowrap }
+
+.topbar-account { position: relative }
+.topbar-account > button {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  background: var(--mint);
+  color: var(--green-deep);
+  font-size: var(--t-label);
+  font-weight: 600;
+  cursor: pointer;
+}
+.topbar-account > button:hover { border-color: var(--line-strong) }
+.account-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 260px;
+  padding: var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: #fff;
+  box-shadow: var(--e-3);
+  z-index: 40;
+  display: grid;
+  gap: 2px;
+}
+.account-menu-head {
+  display: grid;
+  gap: 2px;
+  padding: var(--s-3);
+  margin-bottom: var(--s-1);
+  border-bottom: 1px solid var(--line-soft);
+}
+.account-menu-head b { font-size: var(--t-sm); font-weight: 500; overflow: hidden; text-overflow: ellipsis }
+.account-menu-head small { font-size: var(--t-label); color: var(--muted) }
+.account-menu button {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 10px var(--s-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  font-size: var(--t-sm);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.account-menu button:hover { background: var(--soft) }
+.account-menu svg { color: var(--stone) }
+
+/* Inside a study the bar also carries readiness and "Open report". Both create
+   actions drop to icons there so the breadcrumb keeps its last segment — the
+   one naming the stage you are actually on. */
+.glean-topbar.in-study .topbar-new span,
+.glean-topbar.in-study .topbar-chat span { display: none }
+.glean-topbar.in-study .topbar-new,
+.glean-topbar.in-study .topbar-chat { padding: 0 var(--s-3) }
+.glean-topbar.in-study .topbar-search .search-field.compact { width: 190px }
+
+@media (max-width: 1180px) {
+  .topbar-search .search-field.compact { width: 190px }
+  .topbar-new span { display: none }
+  .topbar-new { padding: 0 var(--s-3) }
+}
+@media (max-width: 1040px) {
+  .glean-topbar.in-study .topbar-search { display: none }
+}
+@media (max-width: 900px) {
+  .topbar-search { display: none }
+}
+@media (max-width: 760px) {
+  .topbar-new { display: none }
+  /* The avatar is the only account control left on a phone, so it has to be a
+     full thumb target rather than the 38px disc the desktop bar can afford. */
+  .topbar-account > button { width: var(--tap); height: var(--tap) }
+}
+
+/* ===========================================================================
+   ASK GLEAN — context
+   Chat used to open on the same three prompts wherever you were, and could
+   only ever hand you sentences. It now leads with the one next step the study
+   actually implies, and every answer that points somewhere can take you there.
+   =========================================================================== */
+.chat-next {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  width: 100%;
+  margin: var(--s-4) 0 var(--s-2);
+  padding: var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--soft);
+  text-align: left;
+}
+.chat-next > span { display: grid; gap: 2px; min-width: 0 }
+.chat-next b { font-size: var(--t-label); text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600 }
+.chat-next small { font-size: var(--t-sm); line-height: 1.5; color: var(--ink-2) }
+.chat-next .outline-button { flex: none }
+
+.chat-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+  padding: 8px var(--s-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  background: #fff;
+  font-size: var(--t-caption);
+  color: var(--ink);
+  cursor: pointer;
+}
+.chat-action:hover { background: var(--soft) }
+
+.chat-jump {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--line-soft);
+}
+.chat-jump > span { font-size: var(--t-label); color: var(--muted); margin-right: var(--s-1) }
+.chat-jump button {
+  padding: 6px var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: #fff;
+  font-size: var(--t-label);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.chat-jump button:hover { border-color: var(--line-strong); color: var(--ink) }
+
+@media (max-width: 620px) {
+  .chat-next { flex-direction: column; align-items: stretch }
+  .chat-next .outline-button { justify-content: center }
+}
+
+/* ===========================================================================
+   SETTINGS — study details, backup, shortcuts
+   =========================================================================== */
+.settings-field { display: grid; gap: var(--s-2); font-size: var(--t-caption); color: var(--muted) }
+.settings-field input, .settings-field textarea {
+  width: 100%;
+  padding: 10px var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: #fff;
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--ink);
+  resize: vertical;
+}
+.settings-field input:focus, .settings-field textarea:focus {
+  outline: 0;
+  border-color: var(--line-strong);
+  box-shadow: var(--e-1);
+}
+
+/* A file input dressed as the outline button beside it, so restore and
+   download read as the pair they are. */
+.file-button { position: relative; cursor: pointer }
+.file-button input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.shortcut-list { display: grid; gap: var(--s-3); margin: 0 }
+.shortcut-list > div { display: flex; align-items: baseline; gap: var(--s-4) }
+.shortcut-list dt { display: flex; gap: 4px; flex: none }
+.shortcut-list dd { margin: 0; font-size: var(--t-sm); color: var(--ink-2) }
+.shortcut-list kbd {
+  font: inherit;
+  font-size: var(--t-label);
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: var(--r-sm);
+  background: #fff;
+  color: var(--ink);
 }
