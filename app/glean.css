@@ -3150,7 +3150,10 @@
   line-height: var(--lh-display);
   letter-spacing: var(--tr-display);
 }
-.home-lede {
+/* Scoped so it outranks the `.home-view p` reset, which is one class plus a
+   type selector and was otherwise zeroing this margin and pulling the lede
+   down to body size. */
+.home-view .home-lede {
   margin: 0 0 var(--s-10);
   max-width: 560px;
   font-size: var(--t-h4);
@@ -3327,7 +3330,7 @@
 @media (max-width: 760px) {
   .home-view { gap: var(--s-16) }
   .home-intro h1 { font-size: 36px; letter-spacing: -.8px }
-  .home-lede { font-size: var(--t-body) }
+  .home-view .home-lede { font-size: var(--t-body) }
   .home-actions .primary-button, .home-actions .outline-button { flex: 1 1 100%; }
   .path-grid, .home-principles { grid-template-columns: minmax(0, 1fr) }
   .path-card { min-height: 0; padding: var(--s-6) }
@@ -3461,7 +3464,7 @@
   text-align: left;
   cursor: pointer;
 }
-.source-cta { border-style: solid; background: #fff }
+.source-picker .source-cta { border-style: solid; background: #fff }
 .doc-import-card:hover, .source-cta:hover { border-color: var(--ink); background: #fff }
 .doc-import-card > span:first-child, .source-cta > span:first-child {
   grid-column: 1;
