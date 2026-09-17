@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import mammoth from "mammoth";
-import { PDFParse } from "pdf-parse";
+import pdfParse from "pdf-parse";
 
 export const runtime = "nodejs";
 
@@ -23,9 +23,7 @@ export async function POST(request: NextRequest) {
       text = result.value;
     } else if (lower.endsWith(".pdf")) {
       parser = "pdf";
-      const pdf = new PDFParse({ data: buffer });
-      const result = await pdf.getText();
-      await pdf.destroy();
+      const result = await pdfParse(buffer);
       text = result.text;
     } else if (lower.endsWith(".txt")) {
       text = buffer.toString("utf8");
