@@ -12,6 +12,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Upload a DOCX, PDF, or TXT research document." }, { status: 400 });
     }
 
+    if (file.size > 10 * 1024 * 1024) {
+      return NextResponse.json({
+        error: "That document is larger than 10 MB. Split it into smaller files and upload them separately."
+      }, { status: 413 });
+    }
+
     const buffer = Buffer.from(await file.arrayBuffer());
     const lower = file.name.toLowerCase();
     let text = "";
@@ -40,8 +46,15 @@ export async function POST(request: NextRequest) {
       warning: normalized.length < 80 ? "The document parsed, but very little text was found. It may be scanned, image-based, or mostly tables." : null
     });
   } catch (error) {
-    return NextResponse.json({
-      error: error instanceof Error ? error.message : "Could not parse this research document."
-    }, { status: 500 });
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error("[research-docs/parse] document extraction failed", { detail });
+
+    const friendlyError = /zip|central directory|docx|office open xml/i.test(detail)
+      ? "Glean could not open that DOCX. It may be damaged, password-protected, or a different file type renamed as .docx. Open it in Word or Google Docs, save a fresh DOCX, and try again."
+      : /password|encrypted/i.test(detail)
+        ? "That document appears to be password-protected. Remove the password and upload it again."
+        : "Glean could not read that document. Try saving a fresh DOCX, a text-based PDF, or a TXT file and upload it again.";
+
+    return NextResponse.json({ error: friendlyError }, { status: 500 });
   }
 }

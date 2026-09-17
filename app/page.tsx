@@ -899,7 +899,7 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
       const body = new FormData();
       body.append("file", file);
       const response = await fetch("/api/research-docs/parse", { method: "POST", body });
-      const result = await response.json();
+      const result = await readApiResponse(response, "Glean could not import this document");
       if (!response.ok) throw new Error(result.error ?? "Could not parse document");
       const nextDrafts = segmentResearchDoc(result.text, result.fileName);
       if (!nextDrafts.length) throw new Error("Glean could not find usable questions in this document. Try a text-based DOCX/PDF or paste the questions.");
@@ -989,7 +989,7 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ formId: backendFormId || undefined, name: formName.trim(), slug: formSlug, sections })
       });
-      const result = await response.json();
+      const result = await readApiResponse(response, "Glean could not publish this form");
       if (!response.ok) throw new Error(result.error ?? "Could not publish form");
       const token = result.form?.token;
       if (!token) throw new Error("Backend did not return a public token");
@@ -1014,7 +1014,7 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
     }
     try {
       const response = await fetch(`/api/forms/responses?formId=${encodeURIComponent(backendFormId)}`);
-      const result = await response.json();
+      const result = await readApiResponse(response, "Glean could not load responses");
       if (!response.ok) throw new Error(result.error ?? "Could not load responses");
       const rows = result.responses ?? [];
       setResponses(rows);
@@ -1063,14 +1063,14 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
           to: reviewerEmail.trim(),
           formName: formName || "this Glean form",
           note: reviewComment,
-          shareUrl: published ? shareUrl : "",
+          shareUrl,
           status: published ? "published" : "draft"
         })
       });
-      const result = await response.json();
+      const result = await readApiResponse(response, "Glean could not send the review email");
       if (!response.ok) throw new Error(result.error ?? "Could not send invite");
       setReview({ kind: "requested", sentTo: reviewerEmail.trim(), note: reviewComment });
-      setImportMessage(`Invite sent to ${reviewerEmail.trim()}.`);
+      setImportMessage(`Preview emailed to ${reviewerEmail.trim()}. They can view this snapshot, but shared editing is not connected yet.`);
     } catch (error) {
       setImportMessage(error instanceof Error ? error.message : "Could not send invite.");
     }
@@ -1124,7 +1124,7 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
         </div>
         <div className={`setup-step setup-step-last ${setupStep === "review" ? "active" : ""}`}>
           <div className="setup-content">
-            <div className="setup-label"><b>Review with others</b><small>Send a private review invite, collect feedback, then mark approved when the form is ready to publish.</small></div>
+            <div className="setup-label"><b>Share for review</b><small>Email a view-only snapshot to a teammate. Shared editing and live comments require a team workspace.</small></div>
             <div className="review-flow-card">
               <div className="review-progress">
                 <span className="done">Draft</span>
@@ -1134,7 +1134,7 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
               <label>Reviewer email<input value={reviewerEmail} onChange={event => setReviewerEmail(event.target.value)} placeholder="teammate@company.com"/></label>
               <label>Reviewer note<textarea rows={3} value={reviewComment} onChange={event => setReviewComment(event.target.value)} placeholder="What should they check?"/></label>
               <div className="review-actions">
-                <button className="outline-button" onClick={requestReview}><SendHorizontal size={15}/>{review.kind === "none" ? "Send invite" : "Resend invite"}</button>
+                <button className="outline-button" onClick={requestReview}><SendHorizontal size={15}/>{review.kind === "none" ? "Email preview" : "Resend preview"}</button>
                 <button className="primary-button" onClick={() => { setReview({ kind: "approved", sentTo: reviewerEmail.trim(), note: reviewComment }); setImportMessage("Review marked approved for this prototype."); }} disabled={!questionCount}><Check size={15}/>Mark approved</button>
               </div>
               {review.kind !== "none" && <div className="review-notes refined"><p><b>{review.sentTo || "Reviewer"}</b> {review.note || "Review requested."}</p>{review.kind === "approved" && <p><b>Status</b> Approved for test publishing.</p>}</div>}
@@ -1294,9 +1294,30 @@ async function parseUploadedFile(file: File) {
   const body = new FormData();
   body.append("file", file);
   const response = await fetch("/api/research-docs/parse", { method: "POST", body });
-  const result = await response.json();
+  const result = await readApiResponse(response, "Glean could not import this file");
   if (!response.ok) throw new Error(result.error ?? "Could not extract this file");
   return String(result.text ?? "");
+}
+
+async function readApiResponse(response: Response, fallback: string): Promise<any> {
+  const contentType = response.headers.get("content-type") ?? "";
+  const body = await response.text();
+
+  if (!contentType.includes("application/json")) {
+    if (response.status === 413) {
+      throw new Error("That file is too large to upload. Try a file under 10 MB, or split it into smaller documents.");
+    }
+    if (response.status >= 500) {
+      throw new Error(`${fallback}. Glean could not reach the document service. Please try again in a moment.`);
+    }
+    throw new Error(`${fallback}. The server returned an unexpected response (${response.status}).`);
+  }
+
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new Error(`${fallback}. Glean received an unreadable response. Please try again.`);
+  }
 }
 
 function readableError(error: unknown) {

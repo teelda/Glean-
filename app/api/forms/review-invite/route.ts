@@ -17,8 +17,9 @@ export async function POST(request: Request) {
 
     if (!apiKey) {
       return NextResponse.json({
-        error: "Email sending is not connected yet. Add RESEND_API_KEY and EMAIL_FROM in Vercel environment variables, then redeploy."
-      }, { status: 501 });
+        error: "Email invitations are not available yet because email has not been connected to this workspace. You can copy the form preview link and share it manually for now.",
+        code: "EMAIL_NOT_CONFIGURED"
+      }, { status: 503 });
     }
 
     const reviewUrl = payload.shareUrl || process.env.NEXT_PUBLIC_APP_URL || "";
@@ -47,9 +48,16 @@ export async function POST(request: Request) {
       })
     });
 
-    const result = await resendResponse.json();
+    const result = await resendResponse.json().catch(() => ({}));
     if (!resendResponse.ok) {
-      return NextResponse.json({ error: result?.message ?? "Email provider rejected the invite." }, { status: 400 });
+      console.error("[forms/review-invite] email provider rejected invite", {
+        status: resendResponse.status,
+        message: result.message ?? "Unknown provider error"
+      });
+      return NextResponse.json({
+        error: "Glean could not send that email. Check the address and try again. If it still fails, copy the preview link and share it manually.",
+        code: "EMAIL_SEND_FAILED"
+      }, { status: 502 });
     }
 
     return NextResponse.json({ id: result.id });

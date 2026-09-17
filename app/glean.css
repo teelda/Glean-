@@ -3395,6 +3395,28 @@
   background: #fff;
   max-height: calc(100vh - var(--s-16));
   overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+.form-context-panel,
+.setup-steps,
+.setup-content,
+.source-picker,
+.draft-stack,
+.draft-stack button,
+.import-status {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.import-status span,
+.draft-stack button span,
+.draft-stack button b,
+.draft-stack button small,
+.review-notes p {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .setup-panel-head h2 { margin: var(--s-2) 0 var(--s-2); font-size: var(--t-h3); font-weight: 500; letter-spacing: var(--tr-h2) }
 .setup-panel-head p { margin: 0; font-size: var(--t-caption); color: var(--muted); line-height: 1.55 }
