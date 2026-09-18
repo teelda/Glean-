@@ -160,6 +160,7 @@ export default function GleanApp() {
   // instead of leaving the previous person's study on screen.
   useEffect(() => {
     setLoaded(false);
+    const controller = new AbortController();
     let raw = window.localStorage.getItem(storageKey);
 
     // First sign-in on a browser that already held pre-auth work: adopt it once,
@@ -175,12 +176,28 @@ export default function GleanApp() {
       }
     }
 
+    let localStudy = initialStudy;
     if (raw) {
-      try { setStudy(JSON.parse(raw)); } catch { setStudy(initialStudy); }
-    } else {
-      setStudy(initialStudy);
+      try { localStudy = JSON.parse(raw); } catch { localStudy = initialStudy; }
     }
-    setLoaded(true);
+
+    if (!user) {
+      setStudy(localStudy);
+      setLoaded(true);
+      return () => controller.abort();
+    }
+
+    fetch("/api/studies/current", { signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error("Could not load saved study");
+        return response.json();
+      })
+      .then(result => setStudy(result.study ?? localStudy))
+      .catch(error => {
+        if ((error as Error).name !== "AbortError") setStudy(localStudy);
+      })
+      .finally(() => { if (!controller.signal.aborted) setLoaded(true); });
+    return () => controller.abort();
   }, [storageKey, user]);
 
   useEffect(() => {
@@ -189,7 +206,18 @@ export default function GleanApp() {
     // commits. Once `loaded` flips, this re-runs with the real value.
     if (!loaded) return;
     window.localStorage.setItem(storageKey, JSON.stringify(study));
-  }, [study, loaded, storageKey]);
+    if (!user) return;
+    const timer = window.setTimeout(() => {
+      fetch("/api/studies/current", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(study)
+      }).then(response => {
+        if (!response.ok) throw new Error("Study save failed");
+      }).catch(() => notify("Saved in this browser; cloud sync needs attention"));
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [study, loaded, storageKey, user]);
 
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
 
@@ -199,9 +227,8 @@ export default function GleanApp() {
   const safeIndex = Math.min(findingIndex, Math.max(study.themes.length - 1, 0));
   const selectedTheme = study.themes[safeIndex] ?? null;
 
-  // Sign-out clears the Supabase session cookie; the middleware then redirects
-  // any further navigation to /signin. The study stays in localStorage under
-  // this user's key, so signing back in restores it.
+  // Sign-out clears the Supabase session cookie. A browser copy remains for
+  // offline recovery, while the primary study is synchronised to Supabase.
   const signOut = useCallback(async () => {
     const supabase = createSupabaseBrowserClient();
     if (supabase) await supabase.auth.signOut();
@@ -320,8 +347,8 @@ export default function GleanApp() {
     setStudy(current => ({ ...current, ...patch, updatedAt: "just now" }));
   };
 
-  // The workspace is browser-local, so a backup file is the only way to move it
-  // between machines, hand it to a teammate, or survive clearing site data.
+  // A downloadable backup is still useful for recovery and portability even
+  // though signed-in workspaces now synchronise to Supabase.
   const exportWorkspace = () => {
     downloadFile(
       `glean-workspace-${slugify(study.title || "study")}.json`,
@@ -2143,7 +2170,7 @@ function SettingsView({ user, study, prefs, onUpdate, onSignOut, onReset, onExpo
       <div>
         <span className="eyebrow">WORKSPACE</span>
         <h1>Settings</h1>
-        <p>Preferences apply to this workspace and are stored in this browser. Nothing here is shared with respondents.</p>
+        <p>Your study syncs securely to your account. Display preferences remain on this browser and nothing here is shared with respondents.</p>
       </div>
     </div>
 
@@ -2153,7 +2180,7 @@ function SettingsView({ user, study, prefs, onUpdate, onSignOut, onReset, onExpo
           <div className="settings-card-head"><span className="eyebrow">ACCOUNT</span><h2>Who you are signed in as</h2></div>
           <div className="settings-account">
             <span>{initialsFor(user?.email ?? null)}</span>
-            <div><b>{user?.email ?? "Not signed in"}</b><small>{user ? "Solo researcher workspace" : "Sign in to keep your study across devices"}</small></div>
+            <div><b>{user?.email ?? "Not signed in"}</b><small>{user ? "Study sync is connected" : "Sign in to keep your study across devices"}</small></div>
             <button className="outline-button" onClick={onSignOut}><LogOut size={15}/>{user ? "Sign out" : "Sign in"}</button>
           </div>
         </section>
@@ -2187,7 +2214,7 @@ function SettingsView({ user, study, prefs, onUpdate, onSignOut, onReset, onExpo
 
         <section className="settings-card">
           <div className="settings-card-head"><span className="eyebrow">BACKUP</span><h2>Move this workspace</h2></div>
-          <p className="settings-note">Your study lives in this browser only. A backup file is how you move it to another machine, hand it to a teammate, or get it back after clearing site data. Restoring replaces everything currently in the workspace.</p>
+          <p className="settings-note">Your signed-in study is stored securely in Glean and a browser copy supports recovery. Download a backup before major changes. Restoring replaces the current study and then syncs it to your account.</p>
           <div className="settings-actions">
             <button className="outline-button" onClick={onExportWorkspace}><Download size={15}/>Download backup</button>
             <label className="outline-button file-button"><Upload size={15}/>Restore from file<input type="file" accept="application/json,.json" onChange={event => { onImportWorkspace(event.currentTarget.files?.[0] ?? null); event.currentTarget.value = ""; }}/></label>
