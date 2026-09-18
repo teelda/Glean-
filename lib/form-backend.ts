@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
+import { hashPublicToken } from "@/lib/security";
 
 export type BackendQuestion = {
   id: string;
@@ -116,13 +117,14 @@ export async function publishForm(input: { name: string; slug: string; sections:
       // else. Falling through to insert would mint a copy, so refuse instead.
       throw new Error("That form could not be updated.");
     }
+    const token = createPublicToken();
     const { data, error } = await supabase
       .from("research_forms")
-      .insert({ owner_id: input.ownerId, name: input.name, slug: input.slug, sections: input.sections, status: "published", public_token: createPublicToken() })
-      .select("id, slug, name, sections, status, public_token, created_at, updated_at")
+      .insert({ owner_id: input.ownerId, name: input.name, slug: input.slug, sections: input.sections, status: "published", public_token_hash: hashPublicToken(token) })
+      .select("id, slug, name, sections, status, created_at, updated_at")
       .single();
     if (error) throw new Error(error.message);
-    return mapSupabaseForm(data);
+    return { ...mapSupabaseForm({ ...data, public_token: null }), token };
   }
 
   assertLocalStoreUsable();
@@ -163,12 +165,21 @@ async function findFormByToken(token: string) {
   if (supabase) {
     const { data, error } = await supabase
       .from("research_forms")
+      .select("id, slug, name, sections, status, created_at, updated_at")
+      .eq("public_token_hash", hashPublicToken(token))
+      .eq("status", "published")
+      .single();
+    if (!error && data) return mapSupabaseForm({ ...data, public_token: null });
+    // Backward compatibility for links published before token hashing. New
+    // forms never store the raw token.
+    const { data: legacy, error: legacyError } = await supabase
+      .from("research_forms")
       .select("id, slug, name, sections, status, public_token, created_at, updated_at")
       .eq("public_token", token)
       .eq("status", "published")
       .single();
-    if (error || !data) return null;
-    return mapSupabaseForm(data);
+    if (legacyError || !legacy) return null;
+    return mapSupabaseForm(legacy);
   }
   assertLocalStoreUsable();
   const store = await readStore();
@@ -189,7 +200,7 @@ export async function submitResponse(token: string, answers: Record<string, stri
   if (supabase) {
     const { data, error } = await supabase
       .from("form_responses")
-      .insert({ form_id: form.id, public_token: token, answers })
+      .insert({ form_id: form.id, answers })
       .select("id, form_id, created_at")
       .single();
     if (error) throw new Error(error.message);

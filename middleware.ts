@@ -18,10 +18,14 @@ export async function middleware(request: NextRequest) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-  // Without credentials there is no auth to enforce. Fail open so local
-  // development without a Supabase project still runs, rather than locking
-  // every route behind a sign-in that cannot succeed.
-  if (!url || !anonKey) return response;
+  // Local development can run without Supabase. Production must fail closed:
+  // missing auth configuration must never expose a private workspace.
+  if (!url || !anonKey) {
+    if (process.env.NODE_ENV === "production") {
+      return NextResponse.json({ error: "Glean is temporarily unavailable because authentication is not configured." }, { status: 503 });
+    }
+    return response;
+  }
 
   const supabase = createServerClient(url, anonKey, {
     cookies: {

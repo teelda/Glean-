@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import mammoth from "mammoth";
 import pdfParse from "pdf-parse";
+import { requireUser, UnauthorizedError } from "@/lib/auth";
+import { consumeRateLimit, hasTrustedOrigin } from "@/lib/security";
 
 export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
   try {
+    if (!hasTrustedOrigin(request)) return NextResponse.json({ error: "Request origin is not allowed." }, { status: 403 });
+    const user = await requireUser();
+    if (!await consumeRateLimit(`parse:${user.id}`, 30, 3600)) {
+      return NextResponse.json({ error: "Too many document imports. Please try again later." }, { status: 429 });
+    }
     const data = await request.formData();
     const file = data.get("file");
     if (!(file instanceof File)) {
@@ -24,10 +31,16 @@ export async function POST(request: NextRequest) {
     let parser = "plain-text";
 
     if (lower.endsWith(".docx")) {
+      if (buffer[0] !== 0x50 || buffer[1] !== 0x4b) {
+        return NextResponse.json({ error: "That file is not a valid DOCX. Save it as a fresh Word document and try again." }, { status: 415 });
+      }
       parser = "docx";
       const result = await mammoth.extractRawText({ buffer });
       text = result.value;
     } else if (lower.endsWith(".pdf")) {
+      if (buffer.subarray(0, 5).toString("ascii") !== "%PDF-") {
+        return NextResponse.json({ error: "That file is not a valid PDF. Export it as a fresh PDF and try again." }, { status: 415 });
+      }
       parser = "pdf";
       const result = await pdfParse(buffer);
       text = result.text;
@@ -46,6 +59,7 @@ export async function POST(request: NextRequest) {
       warning: normalized.length < 80 ? "The document parsed, but very little text was found. It may be scanned, image-based, or mostly tables." : null
     });
   } catch (error) {
+    if (error instanceof UnauthorizedError) return NextResponse.json({ error: error.message }, { status: 401 });
     const detail = error instanceof Error ? error.message : String(error);
     console.error("[research-docs/parse] document extraction failed", { detail });
 

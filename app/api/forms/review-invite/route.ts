@@ -1,16 +1,23 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { requireUser, UnauthorizedError } from "@/lib/auth";
+import { consumeRateLimit, hasTrustedOrigin } from "@/lib/security";
 
 const inviteSchema = z.object({
   to: z.string().email(),
-  formName: z.string().min(1),
-  note: z.string().optional().default(""),
-  shareUrl: z.string().optional().default(""),
+  formName: z.string().trim().min(1).max(200),
+  note: z.string().max(2_000).optional().default(""),
+  shareUrl: z.string().url().max(2_000).optional().or(z.literal("")).default(""),
   status: z.enum(["draft", "published"]).default("draft")
 });
 
 export async function POST(request: Request) {
   try {
+    if (!hasTrustedOrigin(request)) return NextResponse.json({ error: "Request origin is not allowed." }, { status: 403 });
+    const user = await requireUser();
+    if (!await consumeRateLimit(`invite:${user.id}`, 20, 3600)) {
+      return NextResponse.json({ error: "Too many invitations. Please try again later." }, { status: 429 });
+    }
     const payload = inviteSchema.parse(await request.json());
     const apiKey = process.env.RESEND_API_KEY;
     const from = process.env.EMAIL_FROM || "Glean <onboarding@resend.dev>";
@@ -40,6 +47,7 @@ export async function POST(request: Request) {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json"
       },
+      signal: AbortSignal.timeout(8_000),
       body: JSON.stringify({
         from,
         to: payload.to,
@@ -62,6 +70,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ id: result.id });
   } catch (error) {
+    if (error instanceof UnauthorizedError) return NextResponse.json({ error: error.message }, { status: 401 });
     return NextResponse.json({ error: error instanceof Error ? error.message : "Could not send invite" }, { status: 400 });
   }
 }
