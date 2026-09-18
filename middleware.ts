@@ -7,7 +7,7 @@ import { createServerClient } from "@supabase/ssr";
  * Respondents are not users: they arrive with a form's public token and never
  * sign in. Gating these would break the only flow that collects data.
  */
-const PUBLIC_PREFIXES = ["/signin", "/auth", "/forms", "/api/forms/public"];
+const PUBLIC_PREFIXES = ["/signin", "/auth", "/forms", "/api/forms/public", "/api/health"];
 
 const isPublic = (pathname: string) =>
   PUBLIC_PREFIXES.some(prefix => pathname === prefix || pathname.startsWith(`${prefix}/`));
