@@ -38,7 +38,7 @@ export function executiveSummary(study: Study) {
     return "The approved findings below are no longer linked to any interviews in this study. Re-add the source transcripts before sharing this report.";
   }
   const count = study.interviews.length;
-  return `${count} ${count === 1 ? "interview suggests" : "interviews suggest"} that people lose confidence before reaching a clear first success. The strongest opportunity is to make the intended outcome visible earlier and guide users toward one safe, achievable next step.`;
+  return `${count} ${count === 1 ? "interview supports" : "interviews support"} ${approved.length} approved ${approved.length === 1 ? "finding" : "findings"}. ${approved.map(theme => theme.summary).join(" ")}`;
 }
 
 export function buildEvidenceCsv(study: Study) {

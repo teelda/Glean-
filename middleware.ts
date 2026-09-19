@@ -50,7 +50,7 @@ export async function middleware(request: NextRequest) {
     }
     const redirect = request.nextUrl.clone();
     redirect.pathname = "/signin";
-    redirect.searchParams.set("next", pathname);
+    redirect.searchParams.set("next", pathname + request.nextUrl.search);
     return NextResponse.redirect(redirect);
   }
 

@@ -94,7 +94,7 @@ describe("executiveSummary", () => {
 
   it("agrees in number for a single interview", () => {
     expect(executiveSummary({ ...approvedStudy, interviews: [approvedStudy.interviews[0]] }))
-      .toContain("1 interview suggests");
+      .toContain("1 interview supports");
   });
 });
 

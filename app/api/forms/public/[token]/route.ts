@@ -4,7 +4,8 @@ import { consumeRateLimit, requestFingerprint } from "@/lib/security";
 
 export async function GET(request: Request, { params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
-  if (!await consumeRateLimit(requestFingerprint(request, `form:${token}`), 120, 3600)) {
+  if (!/^[A-Za-z0-9_-]{24,64}$/.test(token)) return NextResponse.json({ error: "Form not found" }, { status: 404 });
+  if (!await consumeRateLimit(requestFingerprint(request, "public-forms"), 120, 3600)) {
     return NextResponse.json({ error: "Too many requests. Please try again later." }, { status: 429 });
   }
   const form = await getPublicForm(token);

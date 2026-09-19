@@ -6,3 +6,10 @@ node_modules
 .pnpm-store
 .openai
 .env*
+.next-verification/
+.next-e2e-*/
+test-results/
+playwright-report/
+tmp/
+scripts/
+e2e/

@@ -52,5 +52,5 @@ test.describe("form lifecycle", () => {
 test("the responses panel refuses to imply data it cannot have", async ({ page }) => {
   await openForms(page);
   await expect(page.getByRole("button", { name: /refresh responses/i })).toBeDisabled();
-  await expect(page.getByRole("button", { name: /move to analyser/i })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /add this page to study/i })).toBeDisabled();
 });

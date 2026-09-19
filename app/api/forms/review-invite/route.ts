@@ -1,90 +1,36 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { requireUser, UnauthorizedError } from "@/lib/auth";
-import { consumeRateLimit, hasTrustedOrigin } from "@/lib/security";
-
-const inviteSchema = z.object({
-  to: z.string().email(),
-  formName: z.string().trim().min(1).max(200),
-  note: z.string().max(2_000).optional().default(""),
-  shareUrl: z.string().url().max(2_000).optional().or(z.literal("")).default(""),
-  status: z.enum(["draft", "published"]).default("draft")
-});
+import { randomBytes } from "node:crypto";
+import { requireUser } from "@/lib/auth";
+import { formAccess } from "@/lib/form-workspace";
+import { apiError, HttpError, readJson } from "@/lib/http";
+import { consumeRateLimit, hasTrustedOrigin, hashPublicToken } from "@/lib/security";
 
 export async function POST(request: Request) {
   try {
-    if (!hasTrustedOrigin(request)) return NextResponse.json({ error: "Request origin is not allowed." }, { status: 403 });
+    if (!hasTrustedOrigin(request)) throw new HttpError("Request origin is not allowed.", 403);
     const user = await requireUser();
-    if (!await consumeRateLimit(`invite:${user.id}`, 20, 3600)) {
-      return NextResponse.json({ error: "Too many invitations. Please try again later." }, { status: 429 });
+    if (!await consumeRateLimit(`invite:${user.id}`, 20, 3600)) throw new HttpError("Too many invitations. Try again later.", 429);
+    const input = z.object({ formId: z.string().uuid(), to: z.string().email().max(254).transform(s => s.toLowerCase()), role: z.enum(["editor", "reviewer", "viewer"]), note: z.string().max(2000).default("") }).parse(await readJson(request, 10000));
+    const { db, form, role } = await formAccess(input.formId, user.id);
+    if (role !== "owner") throw new HttpError("Only the owner can invite collaborators.", 403);
+    if (input.to === user.email?.toLowerCase()) throw new HttpError("You already own this form.");
+    const token = randomBytes(24).toString("base64url");
+    const { data, error } = await db.from("form_invitations").insert({ form_id: form.id, email: input.to, role: input.role, token_hash: hashPublicToken(token), expires_at: new Date(Date.now() + 7 * 86400000).toISOString() }).select("id").single();
+    if (error) throw error;
+    const base = process.env.NEXT_PUBLIC_APP_URL || new URL(request.url).origin;
+    const inviteUrl = `${base}/invite?token=${token}`;
+    let emailSent = false;
+    if (process.env.RESEND_API_KEY && process.env.EMAIL_FROM) {
+      try {
+        const response = await fetch("https://api.resend.com/emails", {
+          method: "POST", signal: AbortSignal.timeout(8000),
+          headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, "Content-Type": "application/json", "Idempotency-Key": `invite-${data.id}` },
+          body: JSON.stringify({ from: process.env.EMAIL_FROM, to: input.to, subject: "You have been invited to collaborate in Glean", text: `You have been invited to ${form.name} as ${input.role}.\n\n${input.note}\n\nSign in using this email address to accept:\n${inviteUrl}\n\nThis invitation expires in seven days.` })
+        });
+        emailSent = response.ok;
+      } catch { /* Invitation remains usable if email delivery is unavailable. */ }
     }
-    const payload = inviteSchema.parse(await request.json());
-    const apiKey = process.env.RESEND_API_KEY;
-    const from = process.env.EMAIL_FROM || "Glean <onboarding@resend.dev>";
-
-    if (!apiKey) {
-      return NextResponse.json({
-        error: "Email invitations are not available yet because email has not been connected to this workspace. You can copy the form preview link and share it manually for now.",
-        code: "EMAIL_NOT_CONFIGURED"
-      }, { status: 503 });
-    }
-
-    const reviewUrl = payload.shareUrl || process.env.NEXT_PUBLIC_APP_URL || "";
-    const html = `
-      <div style="font-family:Inter,Arial,sans-serif;max-width:560px;margin:0 auto;padding:32px;color:#11113d">
-        <p style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#77788d">Glean review invite</p>
-        <h1 style="font-size:24px;line-height:1.2;margin:0 0 12px">Review ${escapeHtml(payload.formName)}</h1>
-        <p style="font-size:15px;line-height:1.6;color:#4f5066">You’ve been invited to review a research form before it is shared with respondents.</p>
-        ${payload.note ? `<blockquote style="border-left:4px solid #f5c842;margin:22px 0;padding:10px 0 10px 14px;color:#292942">${escapeHtml(payload.note)}</blockquote>` : ""}
-        ${reviewUrl ? `<p><a href="${escapeAttribute(reviewUrl)}" style="display:inline-block;background:#11113d;color:#fff;text-decoration:none;border-radius:12px;padding:12px 16px;font-weight:700">Open form</a></p>` : `<p style="font-size:14px;color:#6e6f83">This form is still a draft. Ask the researcher to publish a review link when ready.</p>`}
-        <p style="font-size:12px;line-height:1.5;color:#77788d;margin-top:28px">Powered by Folde.</p>
-      </div>
-    `;
-
-    const resendResponse = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
-      },
-      signal: AbortSignal.timeout(8_000),
-      body: JSON.stringify({
-        from,
-        to: payload.to,
-        subject: `Review ${payload.formName} in Glean`,
-        html
-      })
-    });
-
-    const result = await resendResponse.json().catch(() => ({}));
-    if (!resendResponse.ok) {
-      console.error("[forms/review-invite] email provider rejected invite", {
-        status: resendResponse.status,
-        message: result.message ?? "Unknown provider error"
-      });
-      return NextResponse.json({
-        error: "Glean could not send that email. Check the address and try again. If it still fails, copy the preview link and share it manually.",
-        code: "EMAIL_SEND_FAILED"
-      }, { status: 502 });
-    }
-
-    return NextResponse.json({ id: result.id });
-  } catch (error) {
-    if (error instanceof UnauthorizedError) return NextResponse.json({ error: error.message }, { status: 401 });
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Could not send invite" }, { status: 400 });
-  }
-}
-
-function escapeHtml(value: string) {
-  return value.replace(/[&<>"']/g, character => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;",
-    "'": "&#039;"
-  }[character] ?? character));
-}
-
-function escapeAttribute(value: string) {
-  return escapeHtml(value).replace(/`/g, "&#096;");
+    return NextResponse.json({ inviteUrl, emailSent, message: emailSent ? "Invitation emailed." : "Invitation created. Email delivery is unavailable; copy the invitation link and share it with this teammate." });
+  } catch (error) { return apiError(error); }
 }

@@ -246,3 +246,15 @@ button:disabled { cursor: not-allowed }
   .report-stage { display: block !important }
   .report-document { max-width: 760px !important; margin: auto !important; padding: 24px !important }
 }
+
+.form-access-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.response-analytics { border-top: 1px solid #e0e0eb; margin-top: 20px; padding-top: 20px; }
+.response-analytics article { margin: 24px 0; }
+.answer-stat { display: grid; grid-template-columns: minmax(80px,1fr) 2fr auto; gap: 12px; align-items: center; margin: 12px 0; font-size: 13px; }
+.answer-stat meter { width: 100%; }
+@media(max-width: 600px) { .answer-stat { grid-template-columns: 1fr auto; } .answer-stat meter { grid-column: 1 / -1; grid-row: 2; } }
+.saved-form-library { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin: 0 0 24px; }
+.saved-form-library label { display: grid; gap: 8px; flex: 1; min-width: 220px; }
+.saved-form-library select, .review-flow-card select { width: 100%; border: 1px solid #d5d5e2; border-radius: 10px; padding: 12px; background: white; color: #292942; font: inherit; }
+.review-flow-card { overflow-wrap: anywhere; min-width: 0; }
+@media(max-width: 600px) { .saved-form-library > * { width: 100%; } }

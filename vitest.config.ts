@@ -1,6 +1,8 @@
 import { defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
 
 export default defineConfig({
+  resolve: { alias: { "@": fileURLToPath(new URL(".", import.meta.url)) } },
   test: {
     // The e2e specs import @playwright/test, which has its own runner and its
     // own `test`. Without this, vitest collects them and fails on the import

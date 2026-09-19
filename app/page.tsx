@@ -13,7 +13,9 @@ import type { Evidence, Interview, Strength, Study, Theme, ThemeStatus } from "@
 import type { FormDraft, FormLogic, FormQuestion, FormSection } from "@/lib/form-import";
 import { Dialog } from "./components/Dialog";
 import { buildEvidenceCsv, buildWordReport, executiveSummary } from "@/lib/export";
-import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { createSupabaseBrowserClient, authConfigured } from "@/lib/supabase/client";
+import { FormTeam } from "./components/FormTeam";
+import { StudyLibrary } from "./components/StudyLibrary";
 
 type SessionUser = { id: string; email: string | null };
 
@@ -31,9 +33,9 @@ type FormDraftSummary = { name: string; questions: number };
  * builder is not something a person can meaningfully "complete", and offering
  * to resume it would send them to a blank page.
  */
-function readFormDraftSummary(): FormDraftSummary | null {
+function readFormDraftSummary(userId?: string): FormDraftSummary | null {
   try {
-    const raw = window.localStorage.getItem(FORM_DRAFT_KEY);
+    const raw = window.localStorage.getItem(userId ? `${FORM_DRAFT_KEY}:${userId}` : FORM_DRAFT_KEY);
     if (!raw) return null;
     const draft = JSON.parse(raw) as { formName?: string; sections?: FormSection[] };
     const questions = (draft.sections ?? []).reduce((total, section) => total + (section.questions?.length ?? 0), 0);
@@ -89,7 +91,6 @@ export default function GleanApp() {
 
   // Re-read on every area change: the builder autosaves as you leave it, so
   // coming back to Home should already know there is a form to finish.
-  useEffect(() => setFormDraft(readFormDraftSummary()), [area]);
 
   const updatePrefs = useCallback((patch: Partial<Preferences>, message: string) => {
     setPrefs(current => {
@@ -105,12 +106,18 @@ export default function GleanApp() {
   const [droppedFiles, setDroppedFiles] = useState<FileList | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [user, setUser] = useState<SessionUser | null>(null);
+  const [cloudReady, setCloudReady] = useState(false);
+  const cloudRevision = useRef<{ studyId: string; revision: number | null } | null>(null);
+  const savingStudy = useRef(false);
+  const pendingStudy = useRef<Study | null>(null);
+  const loadedAccount = useRef<string | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
 
   // One key for the workspace study, derived from who is signed in. Before
   // accounts existed everything lived under LEGACY_STUDY_KEY; scoping it per
   // user stops two accounts on the same machine from seeing each other's study.
   const storageKey = user ? `${LEGACY_STUDY_KEY}:${user.id}` : LEGACY_STUDY_KEY;
+  useEffect(() => setFormDraft(readFormDraftSummary(user?.id)), [area, user?.id]);
 
   // The middleware already guarantees a session on this route; this only reads
   // it so the shell can show who is signed in and offer sign-out.
@@ -160,7 +167,9 @@ export default function GleanApp() {
   // instead of leaving the previous person's study on screen.
   useEffect(() => {
     setLoaded(false);
+    setCloudReady(false); loadedAccount.current = null; pendingStudy.current = null;
     const controller = new AbortController();
+    if (!user && authConfigured()) return () => controller.abort();
     let raw = window.localStorage.getItem(storageKey);
 
     // First sign-in on a browser that already held pre-auth work: adopt it once,
@@ -176,7 +185,7 @@ export default function GleanApp() {
       }
     }
 
-    let localStudy = initialStudy;
+    let localStudy = user ? emptyStudy() : initialStudy;
     if (raw) {
       try { localStudy = JSON.parse(raw); } catch { localStudy = initialStudy; }
     }
@@ -192,32 +201,47 @@ export default function GleanApp() {
         if (!response.ok) throw new Error("Could not load saved study");
         return response.json();
       })
-      .then(result => setStudy(result.study ?? localStudy))
+      .then(result => {
+        if (controller.signal.aborted) return;
+        const next = result.study ?? localStudy;
+        cloudRevision.current = { studyId: next.id, revision: result.revision };
+        loadedAccount.current = user.id;
+        setStudy(next); setCloudReady(true);
+      })
       .catch(error => {
-        if ((error as Error).name !== "AbortError") setStudy(localStudy);
+        if ((error as Error).name !== "AbortError") { loadedAccount.current = user.id; setStudy(localStudy); notify("Cloud study could not load. Cloud saving is paused; reload to retry."); }
       })
       .finally(() => { if (!controller.signal.aborted) setLoaded(true); });
     return () => controller.abort();
-  }, [storageKey, user]);
+  }, [storageKey, user?.id]);
 
   useEffect(() => {
     // Wait for the stored study to land first: writing on the mount pass would
     // persist the initial demo study over it, before the hydrating setState
     // commits. Once `loaded` flips, this re-runs with the real value.
-    if (!loaded) return;
+    if (!loaded || (user && loadedAccount.current !== user.id)) return;
     window.localStorage.setItem(storageKey, JSON.stringify(study));
-    if (!user) return;
+    if (!user || !cloudReady) return;
+    pendingStudy.current = study;
     const timer = window.setTimeout(() => {
-      fetch("/api/studies/current", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(study)
-      }).then(response => {
-        if (!response.ok) throw new Error("Study save failed");
-      }).catch(() => notify("Saved in this browser; cloud sync needs attention"));
+      if (savingStudy.current) return;
+      savingStudy.current = true;
+      (async () => {
+        try {
+          while (pendingStudy.current && loadedAccount.current === user.id) {
+            const next = pendingStudy.current; pendingStudy.current = null;
+            const revision = cloudRevision.current?.studyId === next.id ? cloudRevision.current.revision : null;
+            const response = await fetch("/api/studies/current", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ study: next, revision }) });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error ?? "Cloud save failed");
+            cloudRevision.current = { studyId: next.id, revision: result.revision };
+          }
+        } catch (error) { setCloudReady(false); notify(error instanceof Error ? error.message : "Cloud sync paused. Reload to retry."); }
+        finally { savingStudy.current = false; }
+      })();
     }, 800);
     return () => window.clearTimeout(timer);
-  }, [study, loaded, storageKey, user]);
+  }, [study, loaded, storageKey, user, cloudReady]);
 
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
 
@@ -268,6 +292,7 @@ export default function GleanApp() {
   };
 
   const commitNewStudy = (destination: "studies" | "interviews") => {
+    if (user && (!cloudReady || savingStudy.current || pendingStudy.current)) { notify("Wait for cloud saving to finish before starting another study."); return; }
     setStudy(emptyStudy());
     setFindingIndex(0);
     setConfirmReset(false);
@@ -316,12 +341,12 @@ export default function GleanApp() {
       const quote = (participantLine ?? lines.find(line => line.length > 30) ?? interview.transcript).replace(/^[^:]{1,30}:\s*/, "").trim();
       const theme: Theme = {
         id: `theme-${Date.now()}`,
-        title: "The first successful outcome needs a clearer path",
-        summary: "The participant describes uncertainty before reaching value. This early pattern should be checked against more interviews before it becomes a strong finding.",
+        title: "Source excerpt awaiting interpretation",
+        summary: "This is a transcript excerpt for researcher review. No cross-interview analysis has been performed.",
         strength: "emerging",
         participantCount: 1,
         status: "draft",
-        tags: ["Need", "Opportunity"],
+        tags: ["Source excerpt"],
         x: 0,
         y: 0,
         evidence: [{
@@ -338,7 +363,7 @@ export default function GleanApp() {
     });
     setFindingIndex(0);
     setStage("findings");
-    notify("Findings are ready for review");
+    notify("Source excerpt prepared. Automated synthesis is not connected.");
   };
 
   // Renaming lived nowhere: a study created from Home was called "Untitled
@@ -387,6 +412,7 @@ export default function GleanApp() {
   };
 
   const navCollapsed = navOverride ?? (prefs.autoCollapseNav && area === "forms");
+  if (authConfigured() && !loaded) return <main className="signin-view"><section className="signin-card"><h1>Opening your workspace…</h1><p>Loading your saved research.</p></section></main>;
 
   return <div className={`glean-app ${navCollapsed ? "nav-collapsed" : ""}`}>
     {mobileNav && <button className="nav-scrim" aria-label="Close navigation" onClick={() => setMobileNav(false)}/>} 
@@ -410,7 +436,8 @@ export default function GleanApp() {
 
       {area === "home" && <HomeView study={study} approved={approved} readiness={readiness} hasWork={hasWork} formDraft={formDraft} onContinue={() => openStudy(study.interviews.length ? "findings" : "interviews")} onNew={() => startNewStudy("interviews")} onForms={() => openArea("forms")} onInterviews={() => openStudy("interviews")} onChat={() => setShowChat(true)}/>} 
       {area === "studies" && <StudiesView study={study} formDraft={formDraft} onOpen={() => openStudy(study.interviews.length ? "findings" : "interviews")} onNew={() => startNewStudy("interviews")} onForms={() => openArea("forms")}/>} 
-      {area === "forms" && <FormsView study={study} onOpenStudy={() => openStudy("interviews")} onCopied={() => notify("Form link copied")}/>} 
+      {area === "studies" && user && <StudyLibrary currentId={study.id} onSelect={(next, revision) => { if (savingStudy.current || pendingStudy.current) { notify("Wait for the current study to finish saving before switching."); return; } cloudRevision.current = { studyId: next.id, revision }; setStudy(next); setCloudReady(true); openStudy("interviews"); }}/>}
+      {area === "forms" && <FormsView key={user?.id ?? "local"} userId={user?.id} study={study} onImportResponses={items => { setStudy(current => ({ ...current, interviews: [...current.interviews, ...items.filter(item => !current.interviews.some(i => i.id === item.id))], status: "stale" })); notify("Responses added as study sources"); }} onOpenStudy={() => openStudy("interviews")} onCopied={() => notify("Form link copied")}/>}
       {area === "study" && stage === "interviews" && <InterviewsStage study={study} onAdd={() => setShowAdd(true)} onAnalyse={analyse} onDropFiles={setDroppedFiles} onRemove={removeInterview}/>} 
       {area === "study" && stage === "findings" && <FindingsStage
         study={study}
@@ -434,8 +461,8 @@ export default function GleanApp() {
     {showChat && <ChatModal study={study} area={area} stage={stage} formDraft={formDraft} onClose={() => setShowChat(false)} onReview={() => { setShowChat(false); openStudy("findings"); }} onGo={destination => { setShowChat(false); if (destination === "forms") openArea("forms"); else openStudy(destination); }}/>} 
     {confirmReset && <ConfirmDialog
       title="Start a new study?"
-      body={`This replaces the current study. ${study.interviews.length} ${study.interviews.length === 1 ? "interview" : "interviews"} and ${study.themes.length} ${study.themes.length === 1 ? "finding" : "findings"} will be permanently removed from this workspace, including any approvals. Export your evidence first if you need to keep it.`}
-      confirmLabel="Replace study"
+      body={user ? "Your saved studies remain available in Studies. Wait for cloud saving to finish before starting another study." : "This replaces the current browser-only study. Download a backup first if you need to keep it."}
+      confirmLabel="Start study"
       onCancel={() => setConfirmReset(false)}
       onConfirm={() => commitNewStudy(pendingArea)}
     />}
@@ -830,10 +857,21 @@ type ReviewState =
   | { kind: "requested"; sentTo: string; note: string }
   | { kind: "approved"; sentTo: string; note: string };
 
-function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy: () => void; onCopied: () => void }) {
+type SavedForm = { id: string; name: string; slug: string; sections: FormSection[]; context: { goal?: string; audience?: string; decision?: string }; version: number; role: string; status: string; token?: string; expires_at: string | null };
+
+function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: { study: Study; userId?: string; onOpenStudy: () => void; onCopied: () => void; onImportResponses: (items: Interview[]) => void }) {
+  const [analytics, setAnalytics] = useState<{ total: number; questions: Record<string, { answered: number; values: Record<string, number> }> } | null>(null);
+  const [savedForms, setSavedForms] = useState<SavedForm[]>([]);
+  const [cloudForm, setCloudForm] = useState<SavedForm | null>(null);
+  const [responseTotal, setResponseTotal] = useState(0);
+  const [responsePage, setResponsePage] = useState(0);
+  const [hasMoreResponses, setHasMoreResponses] = useState(false);
+  const mayEdit = !cloudForm || ["owner", "editor"].includes(cloudForm.role);
+  const mayPublish = !cloudForm || cloudForm.role === "owner";
+  const draftStorageKey = userId ? `glean-form-draft-v1:${userId}` : "glean-form-draft-v1";
   const [lifecycle, setLifecycle] = useState<FormLifecycle>({ kind: "blank" });
   const [showEditor, setShowEditor] = useState(true);
-  const [responses, setResponses] = useState<{ id: string; answers: Record<string, string>; createdAt: string }[]>([]);
+  const [responses, setResponses] = useState<{ id: string; answers: Record<string, string>; createdAt: string; sections?: FormSection[] }[]>([]);
   const [moved, setMoved] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [expiry, setExpiry] = useState("7 days");
@@ -842,9 +880,6 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
   const [importing, setImporting] = useState(false);
   const [importMessage, setImportMessage] = useState("");
   const [setupStep, setSetupStep] = useState<"source" | "context" | "review">("source");
-  const [reviewerEmail, setReviewerEmail] = useState("");
-  const [review, setReview] = useState<ReviewState>({ kind: "none" });
-  const [reviewComment, setReviewComment] = useState("Tighten sensitive questions before publishing.");
   const [publishing, setPublishing] = useState(false);
   const [formName, setFormName] = useState("");
   const [researchGoal, setResearchGoal] = useState("");
@@ -864,7 +899,7 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
   const [activeDraftId, setActiveDraftId] = useState("");
   useEffect(() => setOrigin(window.location.origin), []);
   useEffect(() => {
-    const stored = window.localStorage.getItem("glean-form-draft-v1");
+    const stored = window.localStorage.getItem(draftStorageKey);
     if (!stored) return;
     try {
       const draft = JSON.parse(stored) as { formName?: string; researchGoal?: string; audience?: string; decision?: string; sections?: FormSection[]; drafts?: FormDraft[]; activeDraftId?: string; lifecycle?: FormLifecycle; generated?: boolean; published?: boolean };
@@ -885,7 +920,7 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
   }, []);
   const generated = lifecycle.kind !== "blank";
   const published = lifecycle.kind === "published";
-  const backendFormId = lifecycle.kind === "published" ? lifecycle.formId : "";
+  const backendFormId = cloudForm?.id ?? (lifecycle.kind === "published" ? lifecycle.formId : "");
   const questionCount = sections.reduce((total, section) => total + section.questions.length, 0);
   const formSlug = slugify(formName || "research-form");
   const formPath = `/forms/${formSlug}`;
@@ -897,6 +932,7 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
   const importedActiveDraft = Boolean(activeDraft && activeDraft.source !== "Generated from context");
   const hasContextForDraft = Boolean(formName.trim() && researchGoal.trim() && audience.trim() && decision.trim());
   const selectDraft = (draft: FormDraft) => {
+    setCloudForm(null); setResponses([]); setResponseTotal(0);
     setActiveDraftId(draft.id);
     setFormName(draft.name);
     setSections(draft.sections);
@@ -994,15 +1030,35 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
     return { ...question, options: question.options.filter((_, index) => index !== optionIndex), logic: question.logic?.option === removed ? { ...question.logic, option: "" } : question.logic };
   }) } : section));
   const updateQuestionLogic = (sectionId: string, questionId: string, logic: FormLogic) => setSections(current => current.map(section => section.id === sectionId ? { ...section, questions: section.questions.map(question => question.id === questionId ? { ...question, logic: logic.targetSectionId ? logic : undefined } : question) } : section));
-  const saveDraft = () => {
+  const saveDraft = async () => {
+    if (userId) { await persistForm(false); return; }
     const draft: FormDraft = { id: activeDraftId || `draft-saved-${Date.now()}`, name: formName.trim() || "Untitled research form", goal: researchGoal, purpose: decision, audience, status: "Draft", sections, source: activeDraft?.source ?? "Saved draft" };
     setDrafts(current => activeDraftId && current.some(item => item.id === activeDraftId) ? current.map(item => item.id === activeDraftId ? { ...item, ...draft, id: activeDraftId } : item) : [draft, ...current]);
     setActiveDraftId(draft.id);
     setLifecycle({ kind: "draft" });
-    window.localStorage.setItem("glean-form-draft-v1", JSON.stringify({ formName, researchGoal, audience, decision, sections, drafts: activeDraftId ? drafts.map(item => item.id === activeDraftId ? { ...item, ...draft, id: activeDraftId } : item) : [draft, ...drafts], activeDraftId: draft.id, lifecycle: { kind: "draft" } }));
+    window.localStorage.setItem(draftStorageKey, JSON.stringify({ formName, researchGoal, audience, decision, sections, drafts: activeDraftId ? drafts.map(item => item.id === activeDraftId ? { ...item, ...draft, id: activeDraftId } : item) : [draft, ...drafts], activeDraftId: draft.id, lifecycle: { kind: "draft" } }));
     setImportMessage("Draft saved. You can leave this page and come back to keep editing.");
   };
-  const publishToBackend = async () => {
+  const publishToBackend = async () => { await persistForm(true); };
+  const loadSavedForm = (form: SavedForm) => {
+    setCloudForm(form); setFormName(form.name); setSections(form.sections); setResearchGoal(form.context?.goal ?? ""); setAudience(form.context?.audience ?? ""); setDecision(form.context?.decision ?? ""); setActiveDraftId(""); setResponses([]); setResponseTotal(0); setAnalytics(null); setMoved(false);
+    const cached = window.sessionStorage.getItem(`glean-link:${userId}:${form.id}`) ?? "";
+    setLifecycle(form.status === "published" ? { kind: "published", formId: form.id, shareUrl: cached } : { kind: "draft" });
+    setSetupStep("review");
+  };
+  useEffect(() => {
+    if (!userId) return;
+    let active = true;
+    fetch("/api/forms/workspace").then(async r => { const result = await r.json(); if (!r.ok) throw new Error(result.error); return result; }).then(result => {
+      if (!active) return;
+      setSavedForms(result.forms);
+      const requested = new URLSearchParams(window.location.search).get("form");
+      const form = result.forms.find((f: SavedForm) => f.id === requested);
+      if (form) loadSavedForm(form);
+    }).catch(error => { if (active) setImportMessage(error.message); });
+    return () => { active = false; };
+  }, [userId]);
+  const persistForm = async (publish: boolean) => {
     if (!formName.trim()) {
       setImportMessage("Give the form a name before publishing — respondents see it at the top of the page.");
       setSetupStep("context");
@@ -1011,40 +1067,41 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
     setPublishing(true);
     setImportMessage("Creating a test link…");
     try {
-      const response = await fetch("/api/forms/publish", {
+      const response = await fetch(publish ? "/api/forms/publish" : "/api/forms/workspace", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ formId: backendFormId || undefined, name: formName.trim(), slug: formSlug, sections })
+        body: JSON.stringify({ formId: backendFormId || undefined, version: cloudForm?.version, name: formName.trim(), slug: formSlug, sections, context: { goal: researchGoal, audience, decision }, publish, expiresDays: parseInt(expiry) || 7 })
       });
       const result = await readApiResponse(response, "Glean could not publish this form");
       if (!response.ok) throw new Error(result.error ?? "Could not publish form");
-      const token = result.form?.token;
-      if (!token) throw new Error("Backend did not return a public token");
-      setLifecycle({
-        kind: "published",
-        formId: result.form.id,
-        shareUrl: `${origin || "http://localhost:3210"}/forms/${result.form.slug}?token=${token}`
-      });
-      setShowPreview(true);
-      syncDraft({ status: "Published" });
-      setImportMessage(result.mode === "supabase" ? "Published. Responses will be collected for this form." : "Published for local testing. Responses will be collected on this device while the dev server is running.");
+      const form: SavedForm = result.form;
+      const token = form.token;
+      const url = token ? `${window.location.origin}/forms/${form.slug}?token=${token}` : window.sessionStorage.getItem(`glean-link:${userId}:${form.id}`) ?? "";
+      if (url) window.sessionStorage.setItem(`glean-link:${userId}:${form.id}`, url);
+      setCloudForm(form); setSavedForms(current => [form, ...current.filter(f => f.id !== form.id)]);
+      setLifecycle(form.status === "published" ? { kind: "published", formId: form.id, shareUrl: url } : { kind: "draft" });
+      if (publish) setShowPreview(true);
+      setImportMessage(publish ? "Published. Respondents can use the link until its expiry date." : "Draft saved to your account. Teammates can reload it to see these changes.");
     } catch (error) {
       setImportMessage(error instanceof Error ? error.message : "Could not create backend link.");
     } finally {
       setPublishing(false);
     }
   };
-  const refreshBackendResponses = async () => {
+  const refreshBackendResponses = async (page = 0) => {
     if (!backendFormId) {
       setImportMessage("Publish the form before loading responses.");
       return;
     }
     try {
-      const response = await fetch(`/api/forms/responses?formId=${encodeURIComponent(backendFormId)}`);
+      const response = await fetch(`/api/forms/responses?formId=${encodeURIComponent(backendFormId)}&page=${page}`);
       const result = await readApiResponse(response, "Glean could not load responses");
       if (!response.ok) throw new Error(result.error ?? "Could not load responses");
       const rows = result.responses ?? [];
       setResponses(rows);
+      setResponseTotal(result.total); setResponsePage(page); setHasMoreResponses(result.hasMore);
+      const stats = await fetch(`/api/forms/analytics?formId=${encodeURIComponent(backendFormId)}`);
+      if (stats.ok) setAnalytics(await stats.json());
       // The queued-for-analysis notice describes the list being replaced here.
       setMoved(false);
       setImportMessage(rows.length
@@ -1076,37 +1133,12 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
     setSetupStep("review");
     setImportMessage(`Drafted ${draft.sections.reduce((total, section) => total + section.questions.length, 0)} editable questions from your research context.`);
   };
-  const requestReview = async () => {
-    if (!reviewerEmail.trim()) {
-      setImportMessage("Add a reviewer email before requesting review.");
-      return;
-    }
-    setImportMessage("Sending review invite…");
-    try {
-      const response = await fetch("/api/forms/review-invite", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          to: reviewerEmail.trim(),
-          formName: formName || "this Glean form",
-          note: reviewComment,
-          shareUrl,
-          status: published ? "published" : "draft"
-        })
-      });
-      const result = await readApiResponse(response, "Glean could not send the review email");
-      if (!response.ok) throw new Error(result.error ?? "Could not send invite");
-      setReview({ kind: "requested", sentTo: reviewerEmail.trim(), note: reviewComment });
-      setImportMessage(`Preview emailed to ${reviewerEmail.trim()}. They can view this snapshot, but shared editing is not connected yet.`);
-    } catch (error) {
-      setImportMessage(error instanceof Error ? error.message : "Could not send invite.");
-    }
-  };
   return <section className="forms-view page-pad">
     <div className="research-header">
       <div><span className="eyebrow">RESEARCH FORMS</span><h1>Create a form without starting from scratch.</h1><p>Upload a research plan or describe what you need to learn. Glean turns it into editable form drafts you can review, publish, and analyse.</p></div>
       <button className="outline-button" onClick={onOpenStudy}><Upload size={17}/>Analyse interviews</button>
     </div>
+    {userId && <section className="saved-form-library"><label>Saved forms<select value={cloudForm?.id ?? ""} onChange={event => { const form = savedForms.find(f => f.id === event.target.value); if (form && window.confirm("Open the saved version? Save your current edits first.")) loadSavedForm(form); }}><option value="">Choose a form</option>{savedForms.map(f => <option key={f.id} value={f.id}>{f.name} · {f.role} · {f.status}</option>)}</select></label>{cloudForm && <button className="outline-button" onClick={async () => { try { const r = await fetch(`/api/forms/workspace?formId=${cloudForm.id}`); const data = await r.json(); if (!r.ok) throw new Error(data.error); if (window.confirm("Reload the saved version? Unsaved changes will be lost.")) loadSavedForm(data.form); } catch (error) { setImportMessage(readableError(error)); } }}>Reload saved version</button>}<button className="outline-button" onClick={() => { if (window.confirm("Start a new form? Save your current edits first.")) { setCloudForm(null); setLifecycle({ kind: "blank" }); setFormName(""); setSections([]); setActiveDraftId(""); setResponses([]); setSetupStep("source"); } }}>New form</button></section>}
     <div className="form-builder-grid">
       <section className="form-context-panel">
         <div className="setup-panel-head"><span className="eyebrow">FORM SETUP</span><h2>Prepare the draft</h2><p>Bring in source material, confirm the research context, then decide whether this needs team review before sharing.</p></div>
@@ -1117,7 +1149,7 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
         </div>
         <div className="setup-steps">
         <div className={`setup-step ${setupStep === "source" ? "active" : ""}`}>
-          <div className="setup-content">
+          <fieldset disabled={!mayEdit} className="setup-content form-access-fields">
             <div className="setup-label"><b>Start with a source</b><small>Import a document, or start from context if you do not have one yet.</small></div>
             <div className="source-picker">
               <label className="doc-import-card source-primary"><span><FileText size={22}/></span><b>{importing ? "Extracting document…" : "Import document"}</b><small>DOCX, PDF, or TXT</small><input type="file" accept=".docx,.pdf,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" onChange={event => { const files = event.currentTarget.files; importResearchDoc(files).catch(error => setImportMessage(readableError(error))); event.currentTarget.value = ""; }}/></label>
@@ -1135,10 +1167,10 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
               }}><Sparkles size={14}/>Split into focused forms</button>}
             </div>}
             <button className="setup-next" onClick={() => setSetupStep("context")}>Continue to context<ChevronRight size={15}/></button>
-          </div>
+          </fieldset>
         </div>
         <div className={`setup-step ${setupStep === "context" ? "active" : ""}`}>
-          <div className="setup-content">
+          <fieldset disabled={!mayEdit} className="setup-content form-access-fields">
             <div className="setup-label"><b>Research context</b><small>Required if you do not import a document. These fields tell Glean what to draft.</small></div>
             <label>Form name<input value={formName} onChange={event => setFormName(event.target.value)} placeholder="e.g. Feminine wellness discovery form"/></label>
             <label>Research goal<textarea rows={4} value={researchGoal} onChange={event => setResearchGoal(event.target.value)} placeholder="What are you trying to learn or validate?"/></label>
@@ -1147,25 +1179,12 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
             <button className="context-draft-button" onClick={generateForm} disabled={importedActiveDraft || !hasContextForDraft}><Sparkles size={16}/>Draft form from context</button>
             {!hasContextForDraft && <p className="context-hint">Complete the four context fields to draft without uploading a document.</p>}
             <button className="setup-next" onClick={() => setSetupStep("review")}>Continue to review<ChevronRight size={15}/></button>
-          </div>
+          </fieldset>
         </div>
         <div className={`setup-step setup-step-last ${setupStep === "review" ? "active" : ""}`}>
           <div className="setup-content">
-            <div className="setup-label"><b>Share for review</b><small>Email a view-only snapshot to a teammate. Shared editing and live comments require a team workspace.</small></div>
-            <div className="review-flow-card">
-              <div className="review-progress">
-                <span className="done">Draft</span>
-                <span className={review.kind !== "none" ? "done" : ""}>Requested</span>
-                <span className={review.kind === "approved" ? "done" : ""}>Approved</span>
-              </div>
-              <label>Reviewer email<input value={reviewerEmail} onChange={event => setReviewerEmail(event.target.value)} placeholder="teammate@company.com"/></label>
-              <label>Reviewer note<textarea rows={3} value={reviewComment} onChange={event => setReviewComment(event.target.value)} placeholder="What should they check?"/></label>
-              <div className="review-actions">
-                <button className="outline-button" onClick={requestReview}><SendHorizontal size={15}/>{review.kind === "none" ? "Email preview" : "Resend preview"}</button>
-                <button className="primary-button" onClick={() => { setReview({ kind: "approved", sentTo: reviewerEmail.trim(), note: reviewComment }); setImportMessage("Review marked approved for this prototype."); }} disabled={!questionCount}><Check size={15}/>Mark approved</button>
-              </div>
-              {review.kind !== "none" && <div className="review-notes refined"><p><b>{review.sentTo || "Reviewer"}</b> {review.note || "Review requested."}</p>{review.kind === "approved" && <p><b>Status</b> Approved for test publishing.</p>}</div>}
-            </div>
+            <div className="setup-label"><b>Team access and review</b><small>Invite a teammate, choose their access, and discuss the saved form.</small></div>
+            <FormTeam key={backendFormId} formId={backendFormId} role={cloudForm?.role ?? "owner"}/>
           </div>
         </div>
         </div>
@@ -1179,9 +1198,9 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
           </div>
           <div className="toolbar-actions" aria-label="Form builder actions">
             {!importedActiveDraft && !generated && <button className="toolbar-secondary action-generate" onClick={generateForm}><Sparkles size={15}/>Generate</button>}
-            <button className="toolbar-secondary" onClick={saveDraft} disabled={!questionCount}><Save size={15}/>Save</button>
+            <button className="toolbar-secondary" onClick={saveDraft} disabled={!questionCount || !mayEdit || publishing}><Save size={15}/>Save</button>
             <button className="toolbar-secondary" onClick={() => setShowPreview(value => !value)} disabled={!questionCount}><Eye size={15}/>{showPreview ? "Hide" : "Preview"}</button>
-            <button className="toolbar-primary" onClick={publishToBackend} disabled={!questionCount || publishing}><Share2 size={15}/>{publishing ? "Publishing…" : published ? "Update published form" : "Publish"}</button>
+            <button className="toolbar-primary" onClick={publishToBackend} disabled={!questionCount || publishing || !mayPublish}><Share2 size={15}/>{publishing ? "Saving…" : published ? "Update published form" : "Publish"}</button>
           </div>
         </div>
         {importMessage && <div className={`import-status canvas-status ${importing ? "loading" : ""}`}><Sparkles size={15}/><span>{importMessage}</span></div>}
@@ -1196,9 +1215,10 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
             </div>
             
           </header>
-          <div className="share-link-row"><code>{shareUrl}</code><button onClick={copyShareLink}>Copy link</button><a href={shareUrl} target="_blank" rel="noreferrer">Open form</a></div>
+          {shareUrl ? <div className="share-link-row"><code>{shareUrl}</code><button onClick={copyShareLink}>Copy link</button><a href={shareUrl} target="_blank" rel="noreferrer">Open form</a></div> : <p>The existing respondent link is unchanged. For security, it is shown only in the browser session that created it. The owner can replace it below.</p>}
+          {mayPublish && cloudForm && <div className="response-actions">{["close", "replace-link"].map(action => <button key={action} className="outline-button" onClick={async () => { if (!window.confirm(action === "close" ? "Close this form? Existing links will stop accepting responses." : "Replace the respondent link? The old link will stop working.")) return; try { const r = await fetch("/api/forms/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, formId: cloudForm.id, version: cloudForm.version }) }); const result = await r.json(); if (!r.ok) throw new Error(result.error); if (result.form.token) window.sessionStorage.setItem(`glean-link:${userId}:${cloudForm.id}`, `${window.location.origin}/forms/${result.form.slug}?token=${result.form.token}`); else window.sessionStorage.removeItem(`glean-link:${userId}:${cloudForm.id}`); loadSavedForm(result.form); setImportMessage(action === "close" ? "Form closed. Existing responses are retained." : "New link created. The old link no longer works."); } catch (error) { setImportMessage(readableError(error)); } }}>{action === "close" ? "Close form" : "Replace link"}</button>)}</div>}
           <div className="share-settings">
-            <label>Link expiry<select value={expiry} onChange={event => setExpiry(event.target.value)}><option>7 days</option><option>14 days</option><option>30 days</option><option>No expiry for this test</option></select></label>
+            <label>Expiry on next publish<select disabled={!mayPublish} value={expiry} onChange={event => setExpiry(event.target.value)}><option>7 days</option><option>14 days</option><option>30 days</option></select></label>
             <label className="checkbox-row"><input type="checkbox" checked={anonymous} onChange={event => setAnonymous(event.target.checked)}/><span>Collect anonymous responses</span></label>
           </div>
           <small>{anonymous ? "Names and emails are not requested on the respondent form." : "Respondent identity collection is off in this prototype until consent fields are configured."} {backendFormId ? "Responses from this link appear in your dashboard." : "Publish to collect responses."}</small>
@@ -1213,7 +1233,7 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
           </div>
         </div>}
         {showEditor && <div className="editor-disclosure"><div><span className="eyebrow">{published ? "OWNER ONLY" : "EDIT FORM"}</span><h3>{published ? "Edit form sections" : "Form sections"}</h3><p>{published ? "These sections are only visible to you. People who open the link answer one section at a time." : "Add, rename, reorder, and tune the questions before publishing."}</p></div></div>}
-        {showEditor && <div className="editable-form">{sections.map((section, sectionIndex) => <section key={section.id} className="editable-section">
+        {showEditor && <fieldset disabled={!mayEdit} className="editable-form form-access-fields">{sections.map((section, sectionIndex) => <section key={section.id} className="editable-section">
           <div className="section-editor-head"><label>Section {sectionIndex + 1}<input value={section.title} onChange={event => updateSection(section.id, event.target.value)}/></label><button className="danger-icon" onClick={() => deleteSection(section.id)} disabled={sections.length <= 1} aria-label={`Delete section ${sectionIndex + 1}`}><Trash2 size={15}/></button></div>
           {section.questions.map((question, questionIndex) => <article key={question.id} className="editable-question">
             <div className="question-topline"><span>{questionIndex + 1}</span><QuestionTypeDropdown value={question.type} onChange={type => updateQuestion(section.id, question.id, { type, options: type === "single" ? question.options.length ? question.options : ["Option 1", "Option 2"] : type === "scale" ? ["1", "2", "3", "4", "5"] : [], logic: type === "open" ? undefined : question.logic })}/><button onClick={() => moveQuestion(section.id, question.id, -1)} disabled={questionIndex === 0} aria-label="Move question up"><ChevronUp size={15}/></button><button onClick={() => moveQuestion(section.id, question.id, 1)} disabled={questionIndex === section.questions.length - 1} aria-label="Move question down"><ChevronDown size={15}/></button><button className="danger-icon" onClick={() => deleteQuestion(section.id, question.id)} aria-label={`Delete question ${questionIndex + 1}`}><Trash2 size={15}/></button></div>
@@ -1237,25 +1257,26 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
             <details className="branch-rule" open={Boolean(question.logic?.targetSectionId)}><summary>{question.logic?.targetSectionId ? `Branches to ${sections.find(item => item.id === question.logic?.targetSectionId)?.title ?? "another section"}` : "Add branching"}</summary><div>{question.type === "single" && question.options.length > 0 && <label>When answer is<select value={question.logic?.option ?? ""} onChange={event => updateQuestionLogic(section.id, question.id, { ...question.logic, option: event.target.value, targetSectionId: question.logic?.targetSectionId ?? "" })}><option value="">Any answer</option>{question.options.map(option => <option key={option} value={option}>{option}</option>)}</select></label>}<label>Then go to<select value={question.logic?.targetSectionId ?? ""} onChange={event => updateQuestionLogic(section.id, question.id, { ...question.logic, targetSectionId: event.target.value })}><option value="">Next section</option>{sections.filter(item => item.id !== section.id).map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label></div></details>
           </article>)}
           <div className="section-actions"><button className="text-button add-question" onClick={() => addQuestion(section.id)}><Plus size={15}/>Add question</button>{sectionIndex === sections.length - 1 && <button className="text-button add-question" onClick={addSection}><Plus size={15}/>Add section</button>}</div>
-        </section>)}</div>}
+        </section>)}</fieldset>}
         <div className="responses-panel">
           <div className="section-bar">
             <div>
               <span className="eyebrow">RESPONSES</span>
-              <h3>{responses.length} collected</h3>
+              <h3>{responseTotal} collected</h3>
               <p>{published
                 ? "Answers submitted through your respondent link. Read them here, then bring them into the study as an evidence source."
                 : "Publish the form before collecting responses."}</p>
             </div>
           </div>
           <div className="response-actions">
-            <button className="outline-button" onClick={refreshBackendResponses} disabled={!published}><MessageSquareText size={16}/>Refresh responses</button>
-            <button className="primary-button" disabled={!responses.length} onClick={() => setMoved(true)}><BarChart3 size={16}/>Move to analyser</button>
+            <button className="outline-button" onClick={() => refreshBackendResponses()} disabled={!backendFormId || cloudForm?.role === "reviewer"}><MessageSquareText size={16}/>Refresh responses</button>
+            <button className="primary-button" disabled={!responses.length} onClick={() => { onImportResponses(responses.map((r, index) => { const transcript = (r.sections ?? sections).flatMap(s => s.questions).filter(q => r.answers[q.id]?.trim()).map(q => `Interviewer: ${q.text}\nParticipant: ${r.answers[q.id]}`).join("\n\n"); return { id: `response-${r.id}`, participant: { id: r.id, code: `R${r.id.slice(0, 8)}`, role: "Survey respondent", segment: formName, accent: "purple" }, title: `${formName} response`, date: r.createdAt, source: "paste" as const, wordCount: transcript.split(/\s+/).length, status: "ready" as const, transcript, summary: "Imported survey answers. Review the source before drawing conclusions." }; })); setMoved(true); }}><BarChart3 size={16}/>Add this page to study</button>
           </div>
-          {moved && <div className="analysis-ready"><Check size={16}/><span>Responses are queued for the analyser. Reading them into findings is not built yet, so nothing has been added to the study.</span></div>}
+          {moved && <div className="analysis-ready"><Check size={16}/><span>These responses are now study sources. Importing them again will not create duplicates.</span></div>}
+          {analytics && <section className="response-analytics"><h3>Response summary</h3><p>Based on all {analytics.total} responses. Counts show answers, not AI conclusions.</p>{sections.flatMap(s => s.questions).filter(q => analytics.questions[q.id]).map(q => { const stat = analytics.questions[q.id]; return <article key={q.id}><h4>{q.text}</h4><small>{stat.answered} answered · {analytics.total - stat.answered} skipped</small>{Object.entries(stat.values).map(([answer, count]) => <div className="answer-stat" key={answer}><span>{answer}</span><meter min={0} max={Math.max(1, stat.answered)} value={count}/><b>{count} ({Math.round(count / stat.answered * 100)}%)</b></div>)}</article>; })}</section>}
           {responses.length > 0 && <ol className="response-list">
             {responses.map((response, index) => {
-              const questions = sections.flatMap(section => section.questions);
+              const questions = (response.sections ?? sections).flatMap(section => section.questions);
               return <li key={response.id}>
                 <div className="response-head">
                   <b>Response {responses.length - index}</b>
@@ -1271,6 +1292,7 @@ function FormsView({ study, onOpenStudy, onCopied }: { study: Study; onOpenStudy
               </li>;
             })}
           </ol>}
+          {responseTotal > 50 && <div className="response-actions"><button className="outline-button" disabled={!responsePage} onClick={() => refreshBackendResponses(responsePage - 1)}>Previous</button><span>Page {responsePage + 1} · {responseTotal} total responses</span><button className="outline-button" disabled={!hasMoreResponses} onClick={() => refreshBackendResponses(responsePage + 1)}>Next</button></div>}
         </div>
       </section>
     </div>

@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 import { hashPublicToken } from "@/lib/security";
+import { validateAnswers } from "./form-validation";
 
 export type BackendQuestion = {
   id: string;
@@ -169,7 +170,11 @@ async function findFormByToken(token: string) {
       .eq("public_token_hash", hashPublicToken(token))
       .eq("status", "published")
       .single();
-    if (!error && data) return mapSupabaseForm({ ...data, public_token: null });
+    if (!error && data) {
+      const { data: published, error: publishError } = await supabase.from("research_forms").select("expires_at,published_sections,published_name").eq("id", data.id).single();
+      if (publishError || !published || (published.expires_at && new Date(published.expires_at).getTime() <= Date.now())) return null;
+      return mapSupabaseForm({ ...data, name: published.published_name ?? data.name, sections: published.published_sections ?? data.sections, public_token: null });
+    }
     // Backward compatibility for links published before token hashing. New
     // forms never store the raw token.
     const { data: legacy, error: legacyError } = await supabase
@@ -179,7 +184,9 @@ async function findFormByToken(token: string) {
       .eq("status", "published")
       .single();
     if (legacyError || !legacy) return null;
-    return mapSupabaseForm(legacy);
+    const { data: published, error: publishError } = await supabase.from("research_forms").select("expires_at,published_sections,published_name").eq("id", legacy.id).single();
+    if (publishError || !published || (published.expires_at && new Date(published.expires_at).getTime() <= Date.now())) return null;
+    return mapSupabaseForm({ ...legacy, name: published.published_name ?? legacy.name, sections: published.published_sections ?? legacy.sections });
   }
   assertLocalStoreUsable();
   const store = await readStore();
@@ -194,13 +201,14 @@ export async function getPublicForm(token: string): Promise<PublicForm | null> {
 export async function submitResponse(token: string, answers: Record<string, string>) {
   const form = await findFormByToken(token);
   if (!form) return null;
+  validateAnswers(form.sections, answers);
   const now = new Date().toISOString();
   const supabase = supabaseAdmin();
 
   if (supabase) {
     const { data, error } = await supabase
       .from("form_responses")
-      .insert({ form_id: form.id, answers })
+      .insert({ form_id: form.id, answers, question_snapshot: form.sections })
       .select("id, form_id, created_at")
       .single();
     if (error) throw new Error(error.message);

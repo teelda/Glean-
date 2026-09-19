@@ -14,7 +14,7 @@ export async function getUser(): Promise<AuthedUser | null> {
   if (!supabase) return null;
   const { data, error } = await supabase.auth.getUser();
   if (error || !data.user) return null;
-  return { id: data.user.id, email: data.user.email ?? null };
+  return { id: data.user.id, email: data.user.email_confirmed_at ? data.user.email ?? null : null };
 }
 
 /** Thrown past the route handler's catch to become a 401. */
