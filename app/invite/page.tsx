@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
+import { ArrowRight, Check, FileText, MessageSquareText, Sprout } from "lucide-react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 export default function InvitationPage() {
@@ -50,5 +51,17 @@ export default function InvitationPage() {
       window.location.assign(`/?form=${result.formId}#forms`);
     } catch (error) { setMessage(error instanceof Error ? error.message : "Could not accept the invitation."); setBusy(false); }
   }
-  return <main className="signin-view"><section className="signin-card"><h1>Join the research</h1><p role="status">{message}</p><button className="primary-button" disabled={busy || signedIn === null || !token} onClick={accept}>{busy ? "Opening…" : signedIn ? "Accept invitation" : "Sign in to accept"}</button><p><a href="/">Return to Glean</a></p></section></main>;
+  return <main className="signin-view invite-view">
+    <section className="signin-story" aria-label="Glean collaboration">
+      <a className="signin-brand" href="/"><span><Sprout size={22}/></span><b>Glean</b><small>Powered by Folde</small></a>
+      <div><span className="eyebrow">TEAM REVIEW</span><h2>Research is stronger when the right people can challenge it.</h2><p>This private invitation adds one shared form to your own Glean workspace.</p></div>
+      <ul><li><FileText size={17}/><span><b>One shared form</b><small>Your other workspace content stays separate.</small></span></li><li><MessageSquareText size={17}/><span><b>Review in context</b><small>Edit or comment according to the access the owner selected.</small></span></li></ul>
+    </section>
+    <section className="signin-panel"><div className="signin-card invite-card">
+      <span className="signin-mark"><Check size={21}/></span><span className="eyebrow">FORM INVITATION</span><h1>Join this research workspace</h1><p role="status">{message}</p>
+      <div className="invite-expectation"><b>What happens next</b><p>Sign in with the invited address, accept access, and Glean will open the shared form.</p></div>
+      <button className="primary-button" disabled={busy || signedIn === null || !token} onClick={accept}>{busy ? "Opening…" : signedIn ? "Accept and open form" : "Sign in to continue"}{!busy&&<ArrowRight size={17}/>}</button>
+      <a className="invite-return" href="/">Return to Glean</a>
+    </div></section>
+  </main>;
 }
