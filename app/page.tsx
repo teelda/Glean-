@@ -129,8 +129,9 @@ export default function GleanApp() {
       if (!active) return;
       setUser(data.user ? { id: data.user.id, email: data.user.email ?? null } : null);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user ? { id: session.user.id, email: session.user.email ?? null } : null);
+      if (event === "SIGNED_OUT") window.location.replace("/signin?error=session-ended");
     });
     return () => { active = false; sub.subscription.unsubscribe(); };
   }, []);
@@ -1042,22 +1043,61 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
   const publishToBackend = async () => { await persistForm(true); };
   const loadSavedForm = (form: SavedForm) => {
     setCloudForm(form); setFormName(form.name); setSections(form.sections); setResearchGoal(form.context?.goal ?? ""); setAudience(form.context?.audience ?? ""); setDecision(form.context?.decision ?? ""); setActiveDraftId(""); setResponses([]); setResponseTotal(0); setAnalytics(null); setMoved(false);
+    window.localStorage.setItem("glean:last-open-form", form.id);
     const cached = window.sessionStorage.getItem(`glean-link:${userId}:${form.id}`) ?? "";
     setLifecycle(form.status === "published" ? { kind: "published", formId: form.id, shareUrl: cached } : { kind: "draft" });
+    setShowPreview(false);
+    setShowEditor(form.status !== "published");
     setSetupStep("review");
   };
   useEffect(() => {
     if (!userId) return;
     let active = true;
-    fetch("/api/forms/workspace").then(async r => { const result = await r.json(); if (!r.ok) throw new Error(result.error); return result; }).then(result => {
-      if (!active) return;
-      setSavedForms(result.forms);
-      const requested = new URLSearchParams(window.location.search).get("form");
-      const form = result.forms.find((f: SavedForm) => f.id === requested);
-      if (form) loadSavedForm(form);
-    }).catch(error => { if (active) setImportMessage(error.message); });
-    return () => { active = false; };
+    let firstLoad = true;
+    const refreshForms = async () => {
+      try {
+        const response = await fetch("/api/forms/workspace", { cache: "no-store" });
+        const result = await response.json();
+        if (response.status === 401) {
+          window.location.replace("/signin?error=session-ended");
+          return;
+        }
+        if (!response.ok) throw new Error(result.error);
+        if (!active) return;
+        setSavedForms(result.forms);
+        if (firstLoad) {
+          const requested = new URLSearchParams(window.location.search).get("form");
+          const remembered = window.localStorage.getItem("glean:last-open-form");
+          const form = result.forms.find((item: SavedForm) => item.id === requested)
+            ?? result.forms.find((item: SavedForm) => item.id === remembered)
+            ?? result.forms[0];
+          if (form) loadSavedForm(form);
+          firstLoad = false;
+        }
+      } catch (error) { if (active) setImportMessage(error instanceof Error ? error.message : "Could not refresh forms."); }
+    };
+    refreshForms();
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") refreshForms(); }, 10000);
+    const onFocus = () => refreshForms();
+    window.addEventListener("focus", onFocus);
+    return () => { active = false; window.clearInterval(timer); window.removeEventListener("focus", onFocus); };
   }, [userId]);
+
+  useEffect(() => {
+    if (!cloudForm) return;
+    const current = savedForms.find(form => form.id === cloudForm.id);
+    if (!current) {
+      setCloudForm(null); setFormName(""); setSections([]); setResearchGoal(""); setAudience(""); setDecision("");
+      setResponses([]); setResponseTotal(0); setAnalytics(null); setLifecycle({ kind: "blank" });
+      setImportMessage("You no longer have access to this form.");
+      return;
+    }
+    if (current.role !== cloudForm.role) {
+      setCloudForm(previous => previous ? { ...previous, role: current.role } : previous);
+      if (current.role === "reviewer") { setResponses([]); setResponseTotal(0); setAnalytics(null); }
+      setImportMessage(`Your access changed to ${current.role}.`);
+    }
+  }, [savedForms]);
   const persistForm = async (publish: boolean) => {
     if (!formName.trim()) {
       setImportMessage("Give the form a name before publishing — respondents see it at the top of the page.");
@@ -1200,6 +1240,7 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
             {!importedActiveDraft && !generated && <button className="toolbar-secondary action-generate" onClick={generateForm}><Sparkles size={15}/>Generate</button>}
             <button className="toolbar-secondary" onClick={saveDraft} disabled={!questionCount || !mayEdit || publishing}><Save size={15}/>Save</button>
             <button className="toolbar-secondary" onClick={() => setShowPreview(value => !value)} disabled={!questionCount}><Eye size={15}/>{showPreview ? "Hide" : "Preview"}</button>
+            <button className="toolbar-secondary" onClick={() => setShowEditor(value => !value)} disabled={!questionCount}>{showEditor ? "Hide editor" : mayEdit ? "Edit questions" : "Review questions"}</button>
             <button className="toolbar-primary" onClick={publishToBackend} disabled={!questionCount || publishing || !mayPublish}><Share2 size={15}/>{publishing ? "Saving…" : published ? "Update published form" : "Publish"}</button>
           </div>
         </div>
@@ -1223,7 +1264,7 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
           </div>
           <small>{anonymous ? "Names and emails are not requested on the respondent form." : "Respondent identity collection is off in this prototype until consent fields are configured."} {backendFormId ? "Responses from this link appear in your dashboard." : "Publish to collect responses."}</small>
         </div>}
-        {(showPreview || published) && <div className="public-form-preview">
+        {showPreview && <div className="public-form-preview">
           <div className="preview-paper">
             <span className="respondent-badge">Question summary</span>
             <h3>{formName}</h3>
@@ -1232,7 +1273,7 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
             {published ? <a className="primary-button" href={shareUrl} target="_blank" rel="noreferrer">Open the respondent form<ArrowRight size={16}/></a> : <p className="preview-note">Publish to see and share the respondent form.</p>}
           </div>
         </div>}
-        {showEditor && <div className="editor-disclosure"><div><span className="eyebrow">{published ? "OWNER ONLY" : "EDIT FORM"}</span><h3>{published ? "Edit form sections" : "Form sections"}</h3><p>{published ? "These sections are only visible to you. People who open the link answer one section at a time." : "Add, rename, reorder, and tune the questions before publishing."}</p></div></div>}
+        {showEditor && <div className="editor-disclosure"><div><span className="eyebrow">{mayEdit ? "FORM BUILDER" : "READ-ONLY FORM"}</span><h3>{mayEdit ? "Edit form sections" : "Review form sections"}</h3><p>{mayEdit ? "Add, rename, reorder, and tune the questions before publishing." : "Your role can review this form and leave notes, but cannot change its questions."}</p></div></div>}
         {showEditor && <fieldset disabled={!mayEdit} className="editable-form form-access-fields">{sections.map((section, sectionIndex) => <section key={section.id} className="editable-section">
           <div className="section-editor-head"><label>Section {sectionIndex + 1}<input value={section.title} onChange={event => updateSection(section.id, event.target.value)}/></label><button className="danger-icon" onClick={() => deleteSection(section.id)} disabled={sections.length <= 1} aria-label={`Delete section ${sectionIndex + 1}`}><Trash2 size={15}/></button></div>
           {section.questions.map((question, questionIndex) => <article key={question.id} className="editable-question">
@@ -1258,7 +1299,7 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
           </article>)}
           <div className="section-actions"><button className="text-button add-question" onClick={() => addQuestion(section.id)}><Plus size={15}/>Add question</button>{sectionIndex === sections.length - 1 && <button className="text-button add-question" onClick={addSection}><Plus size={15}/>Add section</button>}</div>
         </section>)}</fieldset>}
-        <div className="responses-panel">
+        {cloudForm?.role !== "reviewer" && <div className="responses-panel">
           <div className="section-bar">
             <div>
               <span className="eyebrow">RESPONSES</span>
@@ -1293,7 +1334,7 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
             })}
           </ol>}
           {responseTotal > 50 && <div className="response-actions"><button className="outline-button" disabled={!responsePage} onClick={() => refreshBackendResponses(responsePage - 1)}>Previous</button><span>Page {responsePage + 1} · {responseTotal} total responses</span><button className="outline-button" disabled={!hasMoreResponses} onClick={() => refreshBackendResponses(responsePage + 1)}>Next</button></div>}
-        </div>
+        </div>}
       </section>
     </div>
   </section>;

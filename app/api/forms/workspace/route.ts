@@ -18,8 +18,12 @@ export async function GET(request: Request) {
       const { data: comments, error } = await db.from("form_comments").select("id,author_id,body,created_at").eq("form_id", id).order("created_at", { ascending: false }).limit(50);
       if (error) throw error;
       const { data: members } = role === "owner" ? await db.from("form_members").select("user_id,role").eq("form_id", id) : { data: [] };
-      const { data: invitations } = role === "owner" ? await db.from("form_invitations").select("id,email,role,expires_at,accepted_at,revoked_at").eq("form_id", id).order("created_at", { ascending: false }).limit(100) : { data: [] };
-      return NextResponse.json({ form: { ...form, role }, comments, members, invitations }, { headers: { "Cache-Control": "no-store" } });
+      const { data: invitations } = role === "owner" ? await db.from("form_invitations").select("id,email,role,expires_at,accepted_at,accepted_by_user_id,revoked_at").eq("form_id", id).order("created_at", { ascending: false }).limit(100) : { data: [] };
+      const memberRows = (members ?? []).map(member => ({
+        ...member,
+        email: invitations?.find(invitation => invitation.accepted_by_user_id === member.user_id)?.email ?? null
+      }));
+      return NextResponse.json({ form: { ...form, role }, comments, members: memberRows, invitations }, { headers: { "Cache-Control": "no-store" } });
     }
     const db = adminClient();
     const { data: memberships, error: memberError } = await db.from("form_members").select("form_id,role").eq("user_id", user.id).limit(200);

@@ -8,7 +8,8 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 const ERROR_COPY: Record<string, string> = {
   expired: "That link has expired or was already used. Request a new one below.",
   "missing-code": "That link was incomplete. Request a new one below.",
-  "not-configured": "Sign-in is not connected yet. Add the Supabase keys and redeploy."
+  "not-configured": "Sign-in is not connected yet. Add the Supabase keys and redeploy.",
+  "session-ended": "Your session ended. Sign in again to continue."
 };
 
 function SignInForm() {
