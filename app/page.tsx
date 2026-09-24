@@ -864,6 +864,7 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
   const [analytics, setAnalytics] = useState<{ total: number; questions: Record<string, { answered: number; values: Record<string, number> }> } | null>(null);
   const [savedForms, setSavedForms] = useState<SavedForm[]>([]);
   const [cloudForm, setCloudForm] = useState<SavedForm | null>(null);
+  const [remoteUpdateAvailable, setRemoteUpdateAvailable] = useState(false);
   const [responseTotal, setResponseTotal] = useState(0);
   const [responsePage, setResponsePage] = useState(0);
   const [hasMoreResponses, setHasMoreResponses] = useState(false);
@@ -1048,7 +1049,20 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
     setLifecycle(form.status === "published" ? { kind: "published", formId: form.id, shareUrl: cached } : { kind: "draft" });
     setShowPreview(false);
     setShowEditor(form.status !== "published");
+    setRemoteUpdateAvailable(false);
     setSetupStep("review");
+  };
+  const reloadCloudForm = async () => {
+    if (!cloudForm) return;
+    try {
+      const response = await fetch(`/api/forms/workspace?formId=${cloudForm.id}`, { cache: "no-store" });
+      const data = await readApiResponse(response, "Glean could not load the latest form");
+      if (!response.ok) throw new Error(data.error ?? "Could not load the latest form.");
+      if (window.confirm("Load the latest saved version? Unsaved changes on this screen will be lost.")) {
+        loadSavedForm(data.form);
+        setImportMessage("Latest team version loaded.");
+      }
+    } catch (error) { setImportMessage(readableError(error)); }
   };
   useEffect(() => {
     if (!userId) return;
@@ -1097,6 +1111,7 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
       if (current.role === "reviewer") { setResponses([]); setResponseTotal(0); setAnalytics(null); }
       setImportMessage(`Your access changed to ${current.role}.`);
     }
+    if (current.version > cloudForm.version) setRemoteUpdateAvailable(true);
   }, [savedForms]);
   const persistForm = async (publish: boolean) => {
     if (!formName.trim()) {
@@ -1118,7 +1133,7 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
       const token = form.token;
       const url = token ? `${window.location.origin}/forms/${form.slug}?token=${token}` : window.sessionStorage.getItem(`glean-link:${userId}:${form.id}`) ?? "";
       if (url) window.sessionStorage.setItem(`glean-link:${userId}:${form.id}`, url);
-      setCloudForm(form); setSavedForms(current => [form, ...current.filter(f => f.id !== form.id)]);
+      setCloudForm(form); setSavedForms(current => [form, ...current.filter(f => f.id !== form.id)]); setRemoteUpdateAvailable(false);
       setLifecycle(form.status === "published" ? { kind: "published", formId: form.id, shareUrl: url } : { kind: "draft" });
       if (publish) setShowPreview(true);
       setImportMessage(publish ? "Published. Respondents can use the link until its expiry date." : "Draft saved to your account. Teammates can reload it to see these changes.");
@@ -1178,7 +1193,7 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
       <div><span className="eyebrow">RESEARCH FORMS</span><h1>Create a form without starting from scratch.</h1><p>Upload a research plan or describe what you need to learn. Glean turns it into editable form drafts you can review, publish, and analyse.</p></div>
       <button className="outline-button" onClick={onOpenStudy}><Upload size={17}/>Analyse interviews</button>
     </div>
-    {userId && <section className="saved-form-library"><label>Saved forms<select value={cloudForm?.id ?? ""} onChange={event => { const form = savedForms.find(f => f.id === event.target.value); if (form && window.confirm("Open the saved version? Save your current edits first.")) loadSavedForm(form); }}><option value="">Choose a form</option>{savedForms.map(f => <option key={f.id} value={f.id}>{f.name} · {f.role} · {f.status}</option>)}</select></label>{cloudForm && <button className="outline-button" onClick={async () => { try { const r = await fetch(`/api/forms/workspace?formId=${cloudForm.id}`); const data = await r.json(); if (!r.ok) throw new Error(data.error); if (window.confirm("Reload the saved version? Unsaved changes will be lost.")) loadSavedForm(data.form); } catch (error) { setImportMessage(readableError(error)); } }}>Reload saved version</button>}<button className="outline-button" onClick={() => { if (window.confirm("Start a new form? Save your current edits first.")) { setCloudForm(null); setLifecycle({ kind: "blank" }); setFormName(""); setSections([]); setActiveDraftId(""); setResponses([]); setSetupStep("source"); } }}>New form</button></section>}
+    {userId && <section className="saved-form-library"><label>Saved forms<select value={cloudForm?.id ?? ""} onChange={event => { const form = savedForms.find(f => f.id === event.target.value); if (form && window.confirm("Open the saved version? Save your current edits first.")) loadSavedForm(form); }}><option value="">Choose a form</option>{savedForms.map(f => <option key={f.id} value={f.id}>{f.name} · {f.role} · {f.status}</option>)}</select></label>{cloudForm && <button className="outline-button" onClick={reloadCloudForm}>Reload saved version</button>}<button className="outline-button" onClick={() => { if (window.confirm("Start a new form? Save your current edits first.")) { setCloudForm(null); setRemoteUpdateAvailable(false); setLifecycle({ kind: "blank" }); setFormName(""); setSections([]); setActiveDraftId(""); setResponses([]); setSetupStep("source"); } }}>New form</button></section>}
     <div className="form-builder-grid">
       <section className="form-context-panel">
         <div className="setup-panel-head"><span className="eyebrow">FORM SETUP</span><h2>Prepare the draft</h2><p>Bring in source material, confirm the research context, then decide whether this needs team review before sharing.</p></div>
@@ -1244,6 +1259,7 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
             <button className="toolbar-primary" onClick={publishToBackend} disabled={!questionCount || publishing || !mayPublish}><Share2 size={15}/>{publishing ? "Saving…" : published ? "Update published form" : "Publish"}</button>
           </div>
         </div>
+        {remoteUpdateAvailable && <div className="team-update-banner" role="status"><div><b>A teammate saved a newer version</b><span>Your current edits are still here. Load the team version when you are ready.</span></div><button className="outline-button" onClick={reloadCloudForm}>Review latest</button></div>}
         {importMessage && <div className={`import-status canvas-status ${importing ? "loading" : ""}`}><Sparkles size={15}/><span>{importMessage}</span></div>}
         {importedActiveDraft && <div className="imported-source-card"><span className="eyebrow">IMPORTED FROM DOCUMENT</span><h3>{activeDraft?.name}</h3><p>Questions from your uploaded file are loaded below without forced consent or screener sections. Add them only if this will be shared with external respondents.</p><button className="text-button" onClick={addConsentSection}><Plus size={14}/>Add consent/screener</button></div>}
         {published && <div className="form-share-card">

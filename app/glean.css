@@ -4283,6 +4283,12 @@
 .invite-return { justify-self: center; color: var(--muted); font-size: var(--t-caption); text-decoration: none; }
 .invite-return:hover { color: var(--ink); text-decoration: underline; }
 
+.team-update-banner { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 16px 0; padding: 14px 16px; border: 1px solid #d8d2ff; border-radius: var(--r-md); background: #f7f5ff; }
+.team-update-banner > div { display: grid; gap: 3px; }
+.team-update-banner b { font-size: var(--t-sm); }
+.team-update-banner span { color: var(--muted); font-size: var(--t-caption); line-height: 1.45; }
+.team-update-banner button { flex: none; }
+
 @media (max-width: 820px) {
   .signin-view { display: block; background: var(--soft); }
   .signin-story { min-height: auto; gap: 36px; padding: 28px 24px 34px; }
@@ -4295,6 +4301,8 @@
   .signin-card { padding: var(--s-6) }
   .signin-story { padding-inline: 20px; }
   .signin-brand small { display: none; }
+  .team-update-banner { align-items: stretch; flex-direction: column; }
+  .team-update-banner button { justify-content: center; width: 100%; }
 }
 
 /* ===========================================================================

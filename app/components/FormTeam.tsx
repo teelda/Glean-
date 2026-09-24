@@ -10,7 +10,7 @@ export function FormTeam({ formId, role }: { formId: string; role: string }) {
   const [busy, setBusy] = useState(false);
   const [details, setDetails] = useState<{ comments: { id: string; body: string; created_at: string }[]; members: { user_id: string; role: string; email: string | null }[]; invitations: { id: string; email: string; role: string; accepted_at: string | null; revoked_at: string | null }[] }>({ comments: [], members: [], invitations: [] });
   async function refresh() {
-    const response = await fetch(`/api/forms/workspace?formId=${formId}`);
+    const response = await fetch(`/api/forms/workspace?formId=${formId}`, { cache: "no-store" });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error);
     setDetails(result);
@@ -19,7 +19,9 @@ export function FormTeam({ formId, role }: { formId: string; role: string }) {
     if (!formId) return;
     refresh().catch(error => setMessage(error.message));
     const timer = setInterval(() => { if (document.visibilityState === "visible") refresh().catch(() => {}); }, 15000);
-    return () => clearInterval(timer);
+    const onFocus = () => refresh().catch(() => {});
+    window.addEventListener("focus", onFocus);
+    return () => { clearInterval(timer); window.removeEventListener("focus", onFocus); };
   }, [formId]);
   async function action(payload: Record<string, unknown>, endpoint = "/api/forms/workspace") {
     setBusy(true); setMessage("");
