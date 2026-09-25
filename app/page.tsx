@@ -1257,7 +1257,7 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
         </div>
       </section>}
       <section className="form-preview-panel">
-        <div className="section-bar"><div><span className="eyebrow">{published ? "PUBLIC FORM" : "FORM BUILDER"}</span><h2>{generated ? formName : "Review and shape the form"}</h2></div><div className="section-bar-meta"><span className={`status-chip ${published ? "published" : ""}`}>{published ? "Published" : "Draft"}</span><span className="question-count">{questionCount} {questionCount === 1 ? "question" : "questions"}</span></div></div>
+        <div className="section-bar"><div><span className="eyebrow">{workspaceTab === "build" ? "FORM BUILDER" : workspaceTab === "share" ? "RESPONDENT LINK" : workspaceTab === "collaborate" ? "TEAM ACCESS" : "FORM RESPONSES"}</span><h2>{generated ? formName : "Review and shape the form"}</h2></div><div className="section-bar-meta"><span className={`status-chip ${published ? "published" : ""}`}>{published ? "Published" : "Draft"}</span><span className="question-count">{questionCount} {questionCount === 1 ? "question" : "questions"}</span></div></div>
         {workspaceTab === "build" && <div className="builder-toolbar refined-toolbar">
           <div className="toolbar-status">
             <span>{importedActiveDraft ? <Check size={15}/> : <Sparkles size={15}/>}</span>
