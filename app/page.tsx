@@ -6,7 +6,7 @@ import {
   CircleHelp, ClipboardList, Download, Eye, FileText, FolderOpen, Home, Lightbulb,
   LockKeyhole, LogOut, Menu, MessageSquareText, MoreHorizontal, PanelLeftClose,
   PanelLeftOpen, Plus, Quote,
-  Save, Search, SendHorizontal, Settings, Share2, Sparkles, Sprout, Trash2, Upload, X
+  Save, Search, SendHorizontal, Settings, Share2, ShieldCheck, Sparkles, Sprout, Trash2, Upload, X
 } from "lucide-react";
 import { sampleStudy } from "@/lib/sample-data";
 import type { Evidence, Interview, Strength, Study, Theme, ThemeStatus } from "@/lib/types";
@@ -861,6 +861,8 @@ type ReviewState =
 type SavedForm = { id: string; name: string; slug: string; sections: FormSection[]; context: { goal?: string; audience?: string; decision?: string }; version: number; role: string; status: string; token?: string; expires_at: string | null };
 
 function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: { study: Study; userId?: string; onOpenStudy: () => void; onCopied: () => void; onImportResponses: (items: Interview[]) => void }) {
+  const [formsView, setFormsView] = useState<"library" | "workspace">("library");
+  const [workspaceTab, setWorkspaceTab] = useState<"build" | "share" | "collaborate" | "responses">("build");
   const [analytics, setAnalytics] = useState<{ total: number; questions: Record<string, { answered: number; values: Record<string, number> }> } | null>(null);
   const [savedForms, setSavedForms] = useState<SavedForm[]>([]);
   const [cloudForm, setCloudForm] = useState<SavedForm | null>(null);
@@ -1050,8 +1052,16 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
     setShowPreview(false);
     setShowEditor(form.status !== "published");
     setRemoteUpdateAvailable(false);
+    setFormsView("workspace");
+    setWorkspaceTab("build");
+    window.scrollTo({ top: 0, behavior: "smooth" });
     setSetupStep("review");
   };
+  const startNewForm = () => {
+    setCloudForm(null); setRemoteUpdateAvailable(false); setLifecycle({ kind: "blank" }); setFormName(""); setSections([]); setActiveDraftId(""); setResponses([]); setResponseTotal(0); setAnalytics(null); setSetupStep("source"); setFormsView("workspace"); setWorkspaceTab("build"); setShowEditor(true); setShowPreview(false); setImportMessage("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const openFormsLibrary = () => { setFormsView("library"); window.scrollTo({ top: 0, behavior: "smooth" }); };
   const reloadCloudForm = async () => {
     if (!cloudForm) return;
     try {
@@ -1081,10 +1091,7 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
         setSavedForms(result.forms);
         if (firstLoad) {
           const requested = new URLSearchParams(window.location.search).get("form");
-          const remembered = window.localStorage.getItem("glean:last-open-form");
-          const form = result.forms.find((item: SavedForm) => item.id === requested)
-            ?? result.forms.find((item: SavedForm) => item.id === remembered)
-            ?? result.forms[0];
+          const form = result.forms.find((item: SavedForm) => item.id === requested);
           if (form) loadSavedForm(form);
           firstLoad = false;
         }
@@ -1189,14 +1196,19 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
     setImportMessage(`Drafted ${draft.sections.reduce((total, section) => total + section.questions.length, 0)} editable questions from your research context.`);
   };
   return <section className="forms-view page-pad">
-    <div className="research-header">
-      <div><span className="eyebrow">RESEARCH FORMS</span><h1>Create a form without starting from scratch.</h1><p>Upload a research plan or describe what you need to learn. Glean turns it into editable form drafts you can review, publish, and analyse.</p></div>
-      <button className="outline-button" onClick={onOpenStudy}><Upload size={17}/>Analyse interviews</button>
+    <div className="forms-page-head">
+      <div><span className="eyebrow">RESEARCH FORMS</span><h1>{formsView === "library" ? "Forms" : formName || "New form"}</h1><p>{formsView === "library" ? "Create, publish and analyse research forms without mixing setup and results on one screen." : cloudForm ? `${cloudForm.status === "published" ? "Published" : "Draft"} · ${questionCount} ${questionCount === 1 ? "question" : "questions"}` : "Import a document or describe what you need to learn."}</p></div>
+      <div className="research-actions"><button className="outline-button" onClick={onOpenStudy}><Upload size={17}/>Analyse interviews</button>{(formsView === "library" || cloudForm) && <button className="primary-button" onClick={startNewForm}><Plus size={17}/>New form</button>}</div>
     </div>
-    {userId && <section className="saved-form-library"><label>Saved forms<select value={cloudForm?.id ?? ""} onChange={event => { const form = savedForms.find(f => f.id === event.target.value); if (form && window.confirm("Open the saved version? Save your current edits first.")) loadSavedForm(form); }}><option value="">Choose a form</option>{savedForms.map(f => <option key={f.id} value={f.id}>{f.name} · {f.role} · {f.status}</option>)}</select></label>{cloudForm && <button className="outline-button" onClick={reloadCloudForm}>Reload saved version</button>}<button className="outline-button" onClick={() => { if (window.confirm("Start a new form? Save your current edits first.")) { setCloudForm(null); setRemoteUpdateAvailable(false); setLifecycle({ kind: "blank" }); setFormName(""); setSections([]); setActiveDraftId(""); setResponses([]); setSetupStep("source"); } }}>New form</button></section>}
-    <div className="form-builder-grid">
-      <section className="form-context-panel">
-        <div className="setup-panel-head"><span className="eyebrow">FORM SETUP</span><h2>Prepare the draft</h2><p>Bring in source material, confirm the research context, then decide whether this needs team review before sharing.</p></div>
+    <nav className="forms-level-nav" aria-label="Forms navigation"><button className={formsView === "library" ? "active" : ""} onClick={openFormsLibrary}><ClipboardList size={16}/>Forms library</button>{formsView === "workspace" && <span><ChevronRight size={14}/>{cloudForm ? formName : "New form"}</span>}</nav>
+    {formsView === "library" ? <section className="forms-library-view">
+      <header><div><h2>Saved forms</h2><p>Open a draft, manage a published form, or review responses.</p></div><span>{savedForms.length} {savedForms.length === 1 ? "form" : "forms"}</span></header>
+      {savedForms.length ? <div className="forms-library-grid">{savedForms.map(form => <button key={form.id} className="forms-library-card" onClick={() => loadSavedForm(form)}><span className="form-card-icon"><ClipboardList size={19}/></span><span className="form-card-copy"><b>{form.name}</b><small>{form.context?.goal || "No research goal added yet."}</small><em>{form.sections.reduce((total, section) => total + section.questions.length, 0)} questions · {form.role}</em></span><span className={`status-chip ${form.status === "published" ? "published" : ""}`}>{form.status}</span><ChevronRight size={17}/></button>)}</div> : <div className="forms-library-empty"><span><ClipboardList size={24}/></span><h2>Create your first research form</h2><p>Start from a document or give Glean enough context to draft the questions.</p><button className="primary-button" onClick={startNewForm}>Create a form<ArrowRight size={16}/></button></div>}
+    </section> : <>
+    {cloudForm && <nav className="form-workspace-tabs" aria-label="Form workspace">{(["build", "share", "collaborate", "responses"] as const).map(tab => <button key={tab} className={workspaceTab === tab ? "active" : ""} onClick={() => setWorkspaceTab(tab)}>{tab === "build" ? "Build" : tab === "share" ? "Share" : tab === "collaborate" ? "Collaborate" : "Responses"}</button>)}</nav>}
+    <div className={`form-builder-grid ${workspaceTab !== "build" ? "single-view" : ""}`}>
+      {workspaceTab === "build" && <section className="form-context-panel">
+        <div className="setup-panel-head"><span className="eyebrow">FORM SETUP</span><h2>Prepare the draft</h2><p>Bring in source material, confirm the research context, then review the questions Glean creates.</p></div>
         <div className="setup-switcher" role="tablist" aria-label="Form setup steps">
           <button className={setupStep === "source" ? "active" : ""} onClick={() => setSetupStep("source")}><span>1</span>Source</button>
           <button className={setupStep === "context" ? "active" : ""} onClick={() => setSetupStep("context")}><span>2</span>Context</button>
@@ -1238,15 +1250,15 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
         </div>
         <div className={`setup-step setup-step-last ${setupStep === "review" ? "active" : ""}`}>
           <div className="setup-content">
-            <div className="setup-label"><b>Team access and review</b><small>Invite a teammate, choose their access, and discuss the saved form.</small></div>
-            <FormTeam key={backendFormId} formId={backendFormId} role={cloudForm?.role ?? "owner"}/>
+            <div className="setup-label"><b>Ready to shape the draft</b><small>Review the questions and save your work. Team access now has its own Collaborate tab.</small></div>
+            <button className="setup-next" onClick={() => setShowEditor(true)}>Open question editor<ChevronRight size={15}/></button>
           </div>
         </div>
         </div>
-      </section>
+      </section>}
       <section className="form-preview-panel">
         <div className="section-bar"><div><span className="eyebrow">{published ? "PUBLIC FORM" : "FORM BUILDER"}</span><h2>{generated ? formName : "Review and shape the form"}</h2></div><div className="section-bar-meta"><span className={`status-chip ${published ? "published" : ""}`}>{published ? "Published" : "Draft"}</span><span className="question-count">{questionCount} {questionCount === 1 ? "question" : "questions"}</span></div></div>
-        <div className="builder-toolbar refined-toolbar">
+        {workspaceTab === "build" && <div className="builder-toolbar refined-toolbar">
           <div className="toolbar-status">
             <span>{importedActiveDraft ? <Check size={15}/> : <Sparkles size={15}/>}</span>
             <div><b>{published ? "Published" : importedActiveDraft ? "Imported draft" : generated ? "Generated draft" : "Draft not generated"}</b><small>{published ? "Live at the link below. Publishing again updates this same form and keeps the responses you already have." : importedActiveDraft ? "Questions came from your upload. Clean them up before sharing." : generated ? "Save and preview, then publish when it is ready." : "Generate from context or upload a document to begin."}</small></div>
@@ -1258,11 +1270,11 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
             <button className="toolbar-secondary" onClick={() => setShowEditor(value => !value)} disabled={!questionCount}>{showEditor ? "Hide editor" : mayEdit ? "Edit questions" : "Review questions"}</button>
             <button className="toolbar-primary" onClick={publishToBackend} disabled={!questionCount || publishing || !mayPublish}><Share2 size={15}/>{publishing ? "Saving…" : published ? "Update published form" : "Publish"}</button>
           </div>
-        </div>
+        </div>}
         {remoteUpdateAvailable && <div className="team-update-banner" role="status"><div><b>A teammate saved a newer version</b><span>Your current edits are still here. Load the team version when you are ready.</span></div><button className="outline-button" onClick={reloadCloudForm}>Review latest</button></div>}
         {importMessage && <div className={`import-status canvas-status ${importing ? "loading" : ""}`}><Sparkles size={15}/><span>{importMessage}</span></div>}
-        {importedActiveDraft && <div className="imported-source-card"><span className="eyebrow">IMPORTED FROM DOCUMENT</span><h3>{activeDraft?.name}</h3><p>Questions from your uploaded file are loaded below without forced consent or screener sections. Add them only if this will be shared with external respondents.</p><button className="text-button" onClick={addConsentSection}><Plus size={14}/>Add consent/screener</button></div>}
-        {published && <div className="form-share-card">
+        {workspaceTab === "build" && importedActiveDraft && <div className="imported-source-card"><span className="eyebrow">IMPORTED FROM DOCUMENT</span><h3>{activeDraft?.name}</h3><p>Questions from your uploaded file are loaded below without forced consent or screener sections. Add them only if this will be shared with external respondents.</p><button className="text-button" onClick={addConsentSection}><Plus size={14}/>Add consent/screener</button></div>}
+        {workspaceTab === "share" && published && <div className="form-share-card">
           <header>
             <span className="published-icon"><Share2 size={18}/></span>
             <div>
@@ -1280,7 +1292,8 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
           </div>
           <small>{anonymous ? "Names and emails are not requested on the respondent form." : "Respondent identity collection is off in this prototype until consent fields are configured."} {backendFormId ? "Responses from this link appear in your dashboard." : "Publish to collect responses."}</small>
         </div>}
-        {showPreview && <div className="public-form-preview">
+        {workspaceTab === "share" && !published && <div className="workspace-empty-state"><span><Share2 size={22}/></span><h3>Publish when the form is ready</h3><p>Finish the questions in Build, then publish to create a respondent link.</p><button className="primary-button" disabled={!questionCount || publishing || !mayPublish} onClick={publishToBackend}>Publish form</button></div>}
+        {workspaceTab === "build" && showPreview && <div className="public-form-preview">
           <div className="preview-paper">
             <span className="respondent-badge">Question summary</span>
             <h3>{formName}</h3>
@@ -1289,8 +1302,8 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
             {published ? <a className="primary-button" href={shareUrl} target="_blank" rel="noreferrer">Open the respondent form<ArrowRight size={16}/></a> : <p className="preview-note">Publish to see and share the respondent form.</p>}
           </div>
         </div>}
-        {showEditor && <div className="editor-disclosure"><div><span className="eyebrow">{mayEdit ? "FORM BUILDER" : "READ-ONLY FORM"}</span><h3>{mayEdit ? "Edit form sections" : "Review form sections"}</h3><p>{mayEdit ? "Add, rename, reorder, and tune the questions before publishing." : "Your role can review this form and leave notes, but cannot change its questions."}</p></div></div>}
-        {showEditor && <fieldset disabled={!mayEdit} className="editable-form form-access-fields">{sections.map((section, sectionIndex) => <section key={section.id} className="editable-section">
+        {workspaceTab === "build" && showEditor && questionCount > 0 && <div className="editor-disclosure"><div><span className="eyebrow">{mayEdit ? "FORM BUILDER" : "READ-ONLY FORM"}</span><h3>{mayEdit ? "Edit form sections" : "Review form sections"}</h3><p>{mayEdit ? "Add, rename, reorder, and tune the questions before publishing." : "Your role can review this form and leave notes, but cannot change its questions."}</p></div></div>}
+        {workspaceTab === "build" && showEditor && questionCount > 0 && <fieldset disabled={!mayEdit} className="editable-form form-access-fields">{sections.map((section, sectionIndex) => <section key={section.id} className="editable-section">
           <div className="section-editor-head"><label>Section {sectionIndex + 1}<input value={section.title} onChange={event => updateSection(section.id, event.target.value)}/></label><button className="danger-icon" onClick={() => deleteSection(section.id)} disabled={sections.length <= 1} aria-label={`Delete section ${sectionIndex + 1}`}><Trash2 size={15}/></button></div>
           {section.questions.map((question, questionIndex) => <article key={question.id} className="editable-question">
             <div className="question-topline"><span>{questionIndex + 1}</span><QuestionTypeDropdown value={question.type} onChange={type => updateQuestion(section.id, question.id, { type, options: type === "single" ? question.options.length ? question.options : ["Option 1", "Option 2"] : type === "scale" ? ["1", "2", "3", "4", "5"] : [], logic: type === "open" ? undefined : question.logic })}/><button onClick={() => moveQuestion(section.id, question.id, -1)} disabled={questionIndex === 0} aria-label="Move question up"><ChevronUp size={15}/></button><button onClick={() => moveQuestion(section.id, question.id, 1)} disabled={questionIndex === section.questions.length - 1} aria-label="Move question down"><ChevronDown size={15}/></button><button className="danger-icon" onClick={() => deleteQuestion(section.id, question.id)} aria-label={`Delete question ${questionIndex + 1}`}><Trash2 size={15}/></button></div>
@@ -1315,7 +1328,8 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
           </article>)}
           <div className="section-actions"><button className="text-button add-question" onClick={() => addQuestion(section.id)}><Plus size={15}/>Add question</button>{sectionIndex === sections.length - 1 && <button className="text-button add-question" onClick={addSection}><Plus size={15}/>Add section</button>}</div>
         </section>)}</fieldset>}
-        {cloudForm?.role !== "reviewer" && <div className="responses-panel">
+        {workspaceTab === "collaborate" && <div className="collaboration-panel"><div className="workspace-panel-intro"><span className="eyebrow">TEAM ACCESS</span><h3>Collaborate without exposing respondent data</h3><p>Invite editors to help build, or reviewers to leave notes. Permissions are enforced by the backend.</p></div><FormTeam key={backendFormId} formId={backendFormId} role={cloudForm?.role ?? "owner"}/></div>}
+        {workspaceTab === "responses" && cloudForm?.role !== "reviewer" && <div className="responses-panel">
           <div className="section-bar">
             <div>
               <span className="eyebrow">RESPONSES</span>
@@ -1351,8 +1365,10 @@ function FormsView({ study, userId, onOpenStudy, onCopied, onImportResponses }: 
           </ol>}
           {responseTotal > 50 && <div className="response-actions"><button className="outline-button" disabled={!responsePage} onClick={() => refreshBackendResponses(responsePage - 1)}>Previous</button><span>Page {responsePage + 1} · {responseTotal} total responses</span><button className="outline-button" disabled={!hasMoreResponses} onClick={() => refreshBackendResponses(responsePage + 1)}>Next</button></div>}
         </div>}
+        {workspaceTab === "responses" && cloudForm?.role === "reviewer" && <div className="workspace-empty-state"><span><ShieldCheck size={22}/></span><h3>Responses are private</h3><p>Your Reviewer access includes the form and review notes, but not participant responses.</p></div>}
       </section>
     </div>
+    </>}
   </section>;
 }
 
