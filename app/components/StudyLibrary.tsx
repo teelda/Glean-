@@ -11,7 +11,7 @@ export function StudyLibrary({currentId,onSelect}:{currentId:string;onSelect:(st
  async function change(id:string,action:string){if(!window.confirm(action==="archive"?"Archive this study? It can be restored from this list.":"Restore this study?"))return;try{const r=await fetch("/api/studies/library",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,action})});const d=await r.json();if(!r.ok)throw new Error(d.error);await load();}catch(e){setMessage(e instanceof Error?e.message:"Please try again.");}}
  const formatUpdated=(value:string)=>new Intl.DateTimeFormat(undefined,{day:"numeric",month:"short",year:"numeric"}).format(new Date(value));
  return <section className="study-library-panel page-pad">
-  <header><div><span className="eyebrow">YOUR LIBRARY</span><h2>Saved studies</h2><p>Switch research projects or restore something you archived.</p></div><span>{rows.length} on this page</span></header>
+  <header><div><span className="eyebrow">YOUR LIBRARY</span><h2>Saved studies</h2><p>Switch research projects or restore something you archived.</p></div>{rows.length>0&&<span>{rows.length} {rows.length===1?"study":"studies"}</span>}</header>
   {message&&<p className="study-library-message" role="status">{message}</p>}
   {rows.length===0?<div className="study-library-empty"><h3>No saved studies yet</h3><p>Create a study to keep its brief, interviews and findings together.</p></div>:<div className="study-library-list">{rows.map(s=>{
    const active=s.client_id===currentId&&!s.archived_at;

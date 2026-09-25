@@ -5115,3 +5115,9 @@
   background: #fff;
   color: var(--ink);
 }
+
+/* Keep Studies in one readable column on tablet. An earlier desktop rule
+   appears later in this file, so this final breakpoint must win the cascade. */
+@media (max-width: 1100px) {
+  .research-grid { grid-template-columns: minmax(0, 1fr) }
+}
